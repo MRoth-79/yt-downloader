@@ -1,103 +1,77 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import streamlit as st
 import yt_dlp
 import os
-import threading
+import io
 
-def browse_folder():
-    selected_dir = filedialog.askdirectory()
-    if selected_dir:
-        folder_var.set(selected_dir)
+# Set up page configuration
+st.set_page_config(page_title="YouTube Downloader", page_icon="🎬", layout="centered")
 
-def download_worker(url, output_dir, format_type):
-    """פונקציה שרצה בחוט נפרד ומבצעת את ההורדה בפועל"""
-    # הגדרות בסיסיות ל-yt-dlp
-    ydl_opts = {
-        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-    }
+# App header and description
+st.title("🎬 YouTube Media Downloader")
+st.write("Paste a YouTube link, select your preferred format, and download directly to your device.")
 
-    # התאמת ההגדרות לפי הפורמט הנבחר
-    if format_type == "MP3":
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-    else: # MP4
-        ydl_opts.update({
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        })
+# Input field for the YouTube URL
+url = st.text_input("Enter YouTube Video URL:", placeholder="https://www.youtube.com/watch?v=...")
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        # עדכון הממשק בסיום מוצלח (משתמשים ב-root.after כדי לחזור בבטחה ל-Main Thread)
-        root.after(0, lambda: download_success(format_type))
-    except Exception as e:
-        # עדכון הממשק במקרה של שגיאה
-        root.after(0, lambda: download_failed(str(e)))
+# Format selection dropdown
+format_type = st.selectbox("Select Download Format:", ["MP3 (Audio Only)", "MP4 (Full Video)"])
 
-def download_success(format_type):
-    status_label.config(text="ההורדה הסתיימה בהצלחה!", fg="green")
-    download_button.config(state=tk.NORMAL)
-    messagebox.showinfo("הצלחה", f"הסרטון ירד כקובץ {format_type} בהצלחה!")
+if url:
+    # Trigger processing when the button is clicked
+    if st.button("Process Video for Download", type="primary"):
+        with st.spinner("Processing and downloading in the cloud, please wait..."):
+            
+            # Temporary base filename on the server
+            temp_filename = "downloaded_media"
+            
+            # Base configuration for yt-dlp
+            ydl_opts = {
+                'outtmpl': f"{temp_filename}.%(ext)s",
+                'quiet': True,
+            }
 
-def download_failed(error_msg):
-    status_label.config(text="ההורדה נכשלה", fg="red")
-    download_button.config(state=tk.NORMAL)
-    messagebox.showerror("שגיאה בהורדה", f"התרחשה שגיאה:\n{error_msg}")
+            # Adjust settings based on the selected format
+            if "MP3" in format_type:
+                ydl_opts.update({
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                })
+                final_ext = "mp3"
+            else:
+                ydl_opts.update({
+                    'format': 'best[ext=mp4]/best',
+                })
+                final_ext = "mp4"
 
-def start_download():
-    url = url_var.get().strip()
-    output_dir = folder_var.get().strip()
-    format_type = format_var.get()
-    
-    if not url:
-        messagebox.showerror("שגיאה", "אנא הכנס קישור מיוטיוב")
-        return
-    if not output_dir or not os.path.exists(output_dir):
-        messagebox.showerror("שגיאה", "אנא בחר תיקיית יעד תקינה")
-        return
+            try:
+                # Execute the download process on the server backend
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    actual_filename = f"{temp_filename}.{final_ext}"
+                    video_title = info.get('title', 'youtube_media')
 
-    # מניעת לחיצות כפולות בזמן ההורדה
-    download_button.config(state=tk.DISABLED)
-    status_label.config(text=f"מוריד {format_type}, אנא המתן...", fg="blue")
-    
-    # הפעלת תהליך ההורדה ב-Thread נפרד כדי למנוע את תקיעת ה-GUI
-    threading.Thread(target=download_worker, args=(url, output_dir, format_type), daemon=True).start()
-
-# עיצוב חלון ה-GUI
-root = tk.Tk()
-root.title("YouTube Media Downloader")
-root.geometry("550x300")
-root.resizable(False, False)
-
-url_var = tk.StringVar()
-folder_var = tk.StringVar(value=os.path.expanduser("~/Downloads"))
-format_var = tk.StringVar(value="MP3")
-
-# אלמנטים על המסך
-tk.Label(root, text=":קישור לסרטון מיוטיוב", font=("Arial", 11)).pack(pady=5)
-tk.Entry(root, textvariable=url_var, width=60, justify="right").pack(pady=2)
-
-tk.Label(root, text=":תיקיית יעד שמירה", font=("Arial", 11)).pack(pady=5)
-frame = tk.Frame(root)
-frame.pack(pady=2)
-tk.Entry(frame, textvariable=folder_var, width=48, justify="right").pack(side=tk.RIGHT, padx=5)
-tk.Button(frame, text="בחר תיקייה...", command=browse_folder).pack(side=tk.LEFT)
-
-tk.Label(root, text=":בחר פורמט הורדה", font=("Arial", 11)).pack(pady=5)
-format_dropdown = ttk.Combobox(root, textvariable=format_var, values=["MP3", "MP4"], state="readonly", width=10, justify="center")
-format_dropdown.pack(pady=2)
-
-download_button = tk.Button(root, text="הורד", font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", width=20, command=start_download)
-download_button.pack(pady=15)
-
-status_label = tk.Label(root, text="", font=("Arial", 10))
-status_label.pack()
-
-root.mainloop()
+                # Verify file creation and prepare it for browser download
+                if os.path.exists(actual_filename):
+                    with open(actual_filename, "rb") as file:
+                        file_bytes = file.read()
+                    
+                    # Remove the physical file from the server to keep storage clean
+                    os.remove(actual_filename)
+                    
+                    st.success(f"🎉 Successfully processed: '{video_title}'")
+                    
+                    # Download button to deliver the file to the client's browser
+                    st.download_button(
+                        label=f"⬇️ Click Here to Download {final_ext.upper()}",
+                        data=file_bytes,
+                        file_name=f"{video_title}.{final_ext}",
+                        mime=f"audio/{final_ext}" if final_ext == "mp3" else f"video/{final_ext}"
+                    )
+                else:
+                    st.error("Error: The file could not be generated on the server.")
+            except Exception as e:
+                st.error(f"An error occurred during processing: {str(e)}")
