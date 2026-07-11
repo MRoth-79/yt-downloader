@@ -59,13 +59,13 @@ if urls_input:
                 elif d['status'] == 'finished':
                     status_placeholder.text("Download complete! Converting media format...")
 
-            # Use unique temp template to avoid collision
             temp_template = f"media_dl_{index}_%(id)s.%(ext)s"
             
             ydl_opts = {
                 'outtmpl': temp_template,
-                'quiet': False,  # Turned OFF quiet mode to let metadata stream correctly
+                'quiet': False,
                 'progress_hooks': [ytdl_hook],
+                'noplaylist': True,  # FORCE yt-dlp to download only the specific video, even if the link contains a playlist ID
             }
 
             if "MP3" in format_type:
@@ -88,15 +88,12 @@ if urls_input:
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Extract info first
                     info = ydl.extract_info(url, download=True)
                     video_id = info.get('id', '')
                     video_title = info.get('title', f'video_{index}')
                     
-                    # Target filename after formatting
                     actual_filename = f"media_dl_{index}_{video_id}.{final_ext}"
                     
-                    # Clean title for legal filename usage
                     safe_title = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c in ' _-']).rstrip()
                     if not safe_title:
                         safe_title = "downloaded_file"
