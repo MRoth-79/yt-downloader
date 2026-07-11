@@ -27,10 +27,10 @@ jobs:
 
     - name: Build EXE with PyInstaller
       run: |
-        python -m PyInstaller --noconsole --onefile --name="YT-MP3-Downloader" src/main.py
+        python -m PyInstaller --onefile --copy-metadata yt-dlp --name="YT-Media-Downloader" src/main.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: YT-MP3-Downloader-EXE
-        path: dist/YT-MP3-Downloader.exe
+        name: YT-Media-Downloader-EXE
+        path: dist/YT-Media-Downloader.exe
