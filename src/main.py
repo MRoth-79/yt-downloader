@@ -37,11 +37,11 @@ if urls_input:
     
     if st.button("Start Batch Download", type="primary"):
         total_videos = len(url_list)
-        st.info(Found {total_videos} link(s) to process.)
+        st.info(f"Found {total_videos} link(s) to process.")
         
         # Process each URL in the list one by one
         for index, url in enumerate(url_list):
-            st.markdown(f"---")
+            st.markdown("---")
             st.subheader(f"Processing ({index + 1}/{total_videos}):")
             
             # Create placeholders for dynamic status and progress bar updates
@@ -53,12 +53,10 @@ if urls_input:
             # yt-dlp hook to capture real-time download progress percentages
             def ytdl_hook(d):
                 if d['status'] == 'downloading':
-                    # Extract progress percentage string and convert to float
                     total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
                     downloaded = d.get('downloaded_bytes', 0)
                     if total > 0:
                         percent = downloaded / total
-                        # Clamp percentage between 0.0 and 1.0 for Streamlit's progress bar
                         percent = min(max(percent, 0.0), 1.0)
                         progress_bar.progress(percent)
                         status_placeholder.text(f"Downloading: {int(percent * 100)}% completed")
@@ -95,7 +93,6 @@ if urls_input:
                     info = ydl.extract_info(url, download=True)
                     actual_filename = f"{temp_filename}.{final_ext}"
                     video_title = info.get('title', f'video_{index}')
-                    # Clean up filename for safe filesystem/browser usage
                     safe_title = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c in ' _-']).rstrip()
                     if not safe_title:
                         safe_title = "downloaded_file"
@@ -111,7 +108,7 @@ if urls_input:
                     
                     # Inject JS to force the browser to save the file immediately
                     trigger_auto_download(file_bytes, f"{safe_title}.{final_ext}", mime_type)
-                    st.success(f"Saved to your browser downloads folder: {video_title}.{final_ext}")
+                    st.success(f"Saved to your browser downloads folder: {safe_title}.{final_ext}")
                 else:
                     st.error(f"Error: Could not locate processed file for link {index + 1}.")
             except Exception as e:
