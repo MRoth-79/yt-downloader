@@ -13,6 +13,7 @@ st.set_page_config(
 # --- Custom CSS for Modern Tech Look ---
 st.markdown("""
     <style>
+    /* Gradient Title Effect */
     .main-title {
         font-size: 3rem !important;
         font-weight: 800 !important;
@@ -26,10 +27,12 @@ st.markdown("""
         font-size: 1.1rem;
         margin-bottom: 2rem;
     }
+    /* Smooth transition for hover elements */
     div.stButton > button:first-child {
         transition: all 0.3s ease;
         border-radius: 8px;
     }
+    /* Trash button customization */
     div[data-testid="stActionButton"] button {
         border-color: transparent !important;
         background-color: transparent !important;
@@ -37,12 +40,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- Header Section ---
 st.markdown('<h1 class="main-title">StreamTune</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">The ultimate minimalist, high-speed YouTube media converter.</p>', unsafe_allow_html=True)
 
+# Initialize the list of URLs in session state if it doesn't exist
 if 'url_inputs' not in st.session_state:
     st.session_state.url_inputs = [""]
 
+# --- Quick Stats / Dashboard Feel ---
 valid_urls = [url.strip() for url in st.session_state.url_inputs if url.strip()]
 col_stat1, col_stat2 = st.columns(2)
 with col_stat1:
@@ -51,6 +57,8 @@ with col_stat2:
     st.metric(label="Status", value="Ready" if len(valid_urls) > 0 else "Idle")
 
 st.markdown(" ")
+
+# --- Global Settings Section (Modern Toggle) ---
 st.markdown("#### ⚙️ Choose Output Preferences")
 format_type = st.radio(
     "Select Download Format:",
@@ -61,6 +69,8 @@ format_type = st.radio(
 )
 
 st.markdown(" ")
+
+# --- Video Links Section ---
 st.markdown("#### 🔗 Your Download Queue")
 
 def add_input_field():
@@ -72,9 +82,11 @@ def remove_input_field(index_to_remove):
     else:
         st.session_state.url_inputs[0] = ""
 
+# Clean, modern container with subtle border
 with st.container(border=True):
     for i in range(len(st.session_state.url_inputs)):
         col_input, col_delete = st.columns([12, 1])
+        
         with col_input:
             st.session_state.url_inputs[i] = st.text_input(
                 f"URL #{i + 1}",
@@ -83,6 +95,7 @@ with st.container(border=True):
                 placeholder="Paste YouTube link here...",
                 label_visibility="collapsed"
             )
+            
         with col_delete:
             st.button("🗑️", key=f"del_btn_{i}", on_click=remove_input_field, args=(i,), help="Remove link")
 
@@ -91,13 +104,16 @@ with st.container(border=True):
 
 st.markdown(" ")
 
+# --- Main Download Execution Block ---
 if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid_urls) == 0, use_container_width=True):
     total_videos = len(valid_urls)
     
     for index, url in enumerate(valid_urls):
         st.markdown(f"##### 📦 Extracting Media ({index + 1}/{total_videos})")
+        
         status_placeholder = st.empty()
         progress_bar = st.progress(0)
+        
         status_placeholder.caption("Connecting via secure cloud tunnel...")
         
         def ytdl_hook(d):
@@ -113,7 +129,7 @@ if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid
 
         temp_template = f"media_dl_{index}_%(id)s.%(ext)s"
         
-        # CRITICAL UPDATE: Implemented client impersonation to bypass cloud blocking
+        # ADVANCED CLOUD BYPASS: Injecting web_embedded client data & strict browser spoofing
         ydl_opts = {
             'outtmpl': temp_template,
             'quiet': True,
@@ -121,14 +137,16 @@ if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid
             'noplaylist': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android_music', 'web'],
+                    'player_client': ['web_embedded', 'tvhtml5'],
+                    'player_skip': ['webpage', 'configs'],
                     'skip': ['dash', 'hls']
                 }
             },
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
+                'Sec-Fetch-Mode': 'navigate',
             }
         }
 
@@ -167,7 +185,8 @@ if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid
                 status_placeholder.success(f"🎉 Ready: {video_title}")
                 
                 safe_title = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c in ' _-']).rstrip()
-                if not safe_title: safe_title = "downloaded_file"
+                if not safe_title: 
+                    safe_title = "downloaded_file"
                 
                 st.download_button(
                     label=f"💾 Save {safe_title}.{final_ext}",
