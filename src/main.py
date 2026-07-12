@@ -129,13 +129,13 @@ if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid
 
         temp_template = f"media_dl_{index}_%(id)s.%(ext)s"
         
-        # ADVANCED CLOUD BYPASS: Using cookies from major browsers to eliminate Error 152
+        # FIXED CLOUD BYPASS: Keyring disabled to avoid unsupported keyring errors on Linux cloud servers
         ydl_opts = {
             'outtmpl': temp_template,
             'quiet': True,
             'progress_hooks': [ytdl_hook],
             'noplaylist': True,
-            'cookiesfrombrowser': ('chrome', 'safari', 'edge', 'firefox'),
+            'cookiesfrombrowser': ('firefox',), # Firefox provides the most standalone profile data extraction without keyring needs
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web_embedded', 'tvhtml5'],
