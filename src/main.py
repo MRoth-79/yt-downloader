@@ -1,16 +1,48 @@
-import streamlit as st
-import yt_dlp
 import os
+import io
+import sys
+import shutil
+import zipfile
+import tempfile
+import subprocess
+import importlib
+from pathlib import Path
 
-# --- Page Configuration ---
+import streamlit as st
+
+# ----------------------------------------------------------------------
+# Bootstrap: ensure yt-dlp + FFmpeg are available
+# ----------------------------------------------------------------------
+def ensure_package(module_name, pip_name=None):
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name or module_name])
+        return importlib.import_module(module_name)
+
+@st.cache_resource(show_spinner="Setting up FFmpeg (first run only)...")
+def setup_ffmpeg():
+    existing = shutil.which("ffmpeg")
+    if existing:
+        return os.path.dirname(existing)
+    static_ffmpeg = ensure_package("static_ffmpeg", "static-ffmpeg")
+    static_ffmpeg.add_paths()
+    ffmpeg_path = shutil.which("ffmpeg")
+    return os.path.dirname(ffmpeg_path) if ffmpeg_path else None
+
+yt_dlp = ensure_package("yt_dlp", "yt-dlp")
+FFMPEG_DIR = setup_ffmpeg()
+
+# ----------------------------------------------------------------------
+# Page config + styling
+# ----------------------------------------------------------------------
 st.set_page_config(
-    page_title="StreamTune - Premium Downloader", 
-    page_icon="🎵", 
+    page_title="StreamTune - Premium Downloader",
+    page_icon="🎵",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# --- Custom CSS for Modern Tech Look ---
 st.markdown("""
     <style>
     .main-title {
@@ -21,15 +53,8 @@ st.markdown("""
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.5rem;
     }
-    .subtitle {
-        color: #808495;
-        font-size: 1.1rem;
-        margin-bottom: 2rem;
-    }
-    div.stButton > button:first-child {
-        transition: all 0.3s ease;
-        border-radius: 8px;
-    }
+    .subtitle { color: #808495; font-size: 1.1rem; margin-bottom: 2rem; }
+    div.stButton > button:first-child { transition: all 0.3s ease; border-radius: 8px; }
     div[data-testid="stActionButton"] button {
         border-color: transparent !important;
         background-color: transparent !important;
@@ -40,10 +65,21 @@ st.markdown("""
 st.markdown('<h1 class="main-title">StreamTune</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">The ultimate minimalist, high-speed YouTube media converter.</p>', unsafe_allow_html=True)
 
-if 'url_inputs' not in st.session_state:
-    st.session_state.url_inputs = [""]
+if FFMPEG_DIR:
+    st.caption(f"✅ FFmpeg ready ({FFMPEG_DIR})")
+else:
+    st.error("❌ FFmpeg could not be set up automatically. MP3/MP4 conversion may fail.")
 
-valid_urls = [url.strip() for url in st.session_state.url_inputs if url.strip()]
+# ----------------------------------------------------------------------
+# Session state
+# ----------------------------------------------------------------------
+if "url_inputs" not in st.session_state:
+    st.session_state.url_inputs = [""]
+if "results" not in st.session_state:
+    st.session_state.results = []
+
+valid_urls = [u.strip() for u in st.session_state.url_inputs if u.strip()]
+
 col_stat1, col_stat2 = st.columns(2)
 with col_stat1:
     st.metric(label="Queue Size", value=f"{len(valid_urls)} Video(s)")
@@ -57,7 +93,7 @@ format_type = st.radio(
     ["MP3 (Audio Only)", "MP4 (Full Video)"],
     index=0,
     horizontal=True,
-    label_visibility="collapsed"
+    label_visibility="collapsed",
 )
 
 st.markdown(" ")
@@ -81,7 +117,7 @@ with st.container(border=True):
                 value=st.session_state.url_inputs[i],
                 key=f"url_field_{i}",
                 placeholder="Paste YouTube link here...",
-                label_visibility="collapsed"
+                label_visibility="collapsed",
             )
         with col_delete:
             st.button("🗑️", key=f"del_btn_{i}", on_click=remove_input_field, args=(i,), help="Remove link")
@@ -89,98 +125,158 @@ with st.container(border=True):
     st.markdown(" ")
     st.button("✨ Add Next Track", on_click=add_input_field, type="secondary")
 
+# De-duplicate
+seen = set()
+valid_urls = []
+for u in st.session_state.url_inputs:
+    u = u.strip()
+    if u and u not in seen:
+        seen.add(u)
+        valid_urls.append(u)
+
 st.markdown(" ")
 
-if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid_urls) == 0, use_container_width=True):
-    total_videos = len(valid_urls)
-    
-    for index, url in enumerate(valid_urls):
-        st.markdown(f"##### 📦 Extracting Media ({index + 1}/{total_videos})")
-        status_placeholder = st.empty()
-        progress_bar = st.progress(0)
-        status_placeholder.caption("Processing through isolated cloud session...")
-        
-        def ytdl_hook(d):
-            if d['status'] == 'downloading':
-                total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-                downloaded = d.get('downloaded_bytes', 0)
-                if total > 0:
-                    percent = downloaded / total
-                    progress_bar.progress(min(max(percent, 0.0), 1.0))
-                    status_placeholder.caption(f"Streaming: {int(percent * 100)}%")
-            elif d['status'] == 'finished':
-                status_placeholder.caption("Compiling file fields...")
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+def safe_name(title, fallback):
+    cleaned = "".join(c for c in title if c.isalnum() or c in (" ", "_", "-")).strip()
+    return cleaned or fallback
 
-        temp_template = f"media_dl_{index}_%(id)s.%(ext)s"
-        
-        # SECURE CLOUD DESIGN: Using static cookies file instead of local machine keyrings
+def download_one(url, index, fmt, status_cb, progress_cb):
+    def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes", 0)
+            if total > 0:
+                pct = min(max(downloaded / total, 0.0), 1.0)
+                progress_cb(pct)
+                status_cb(f"Streaming: {int(pct * 100)}%")
+        elif d["status"] == "finished":
+            status_cb("Compiling media file...")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outtmpl = str(Path(tmpdir) / f"item_{index}_%(id)s.%(ext)s")
+
         ydl_opts = {
-            'outtmpl': temp_template,
-            'quiet': True,
-            'progress_hooks': [ytdl_hook],
-            'noplaylist': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web_embedded', 'tvhtml5'],
-                    'player_skip': ['webpage', 'configs'],
-                    'skip': ['dash', 'hls']
-                }
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "progress_hooks": [hook],
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
             },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-            }
         }
+        if FFMPEG_DIR:
+            ydl_opts["ffmpeg_location"] = FFMPEG_DIR
+        # Use cookies.txt if present (helps bypass bot checks on cloud)
+        if os.path.exists("cookies.txt"):
+            ydl_opts["cookiefile"] = "cookies.txt"
 
-        # Automatically bind the cookies file if present in the repository
-        if os.path.exists('cookies.txt'):
-            ydl_opts['cookiefile'] = 'cookies.txt'
-
-        if "MP3" in format_type:
-            ydl_opts.update({'format': 'ba/b'})
+        if "MP3" in fmt:
+            ydl_opts.update({
+                "format": "bestaudio/best",
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }],
+            })
             final_ext = "mp3"
-            mime_type = "audio/mp3"
+            mime = "audio/mpeg"
         else:
-            ydl_opts.update({'format': 'b'})
+            ydl_opts.update({
+                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "merge_output_format": "mp4",
+            })
             final_ext = "mp4"
-            mime_type = "video/mp4"
+            mime = "video/mp4"
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", f"video_{index}")
+
+        candidates = list(Path(tmpdir).glob(f"item_{index}_*.{final_ext}"))
+        if not candidates:
+            candidates = list(Path(tmpdir).glob(f"item_{index}_*.*"))
+        if not candidates:
+            raise FileNotFoundError("No output file was produced by yt-dlp.")
+
+        output_file = max(candidates, key=lambda p: p.stat().st_mtime)
+        file_bytes = output_file.read_bytes()
+
+    filename = f"{safe_name(title, f'download_{index}')}.{final_ext}"
+    return title, filename, file_bytes, mime
+
+def build_zip(results):
+    buffer = io.BytesIO()
+    used = {}
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for r in results:
+            name = r["filename"]
+            if name in used:
+                used[name] += 1
+                stem, ext = os.path.splitext(name)
+                name = f"{stem}_{used[name]}{ext}"
+            else:
+                used[name] = 0
+            zf.writestr(name, r["bytes"])
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# ----------------------------------------------------------------------
+# Main execution
+# ----------------------------------------------------------------------
+if st.button("🚀 Process Batch & Download", type="primary",
+             disabled=len(valid_urls) == 0, use_container_width=True):
+    st.session_state.results = []
+    total = len(valid_urls)
+
+    for index, url in enumerate(valid_urls):
+        st.markdown(f"##### 📦 Extracting Media ({index + 1}/{total})")
+        status = st.empty()
+        bar = st.progress(0)
+        status.caption("Processing...")
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                video_id = info.get('id', '')
-                video_title = info.get('title', f'video_{index}')
-                
-                actual_filename = None
-                for f in os.listdir('.'):
-                    if f.startswith(f"media_dl_{index}_{video_id}"):
-                        actual_filename = f
-                        break
+            title, filename, file_bytes, mime = download_one(
+                url, index, format_type,
+                status_cb=lambda m: status.caption(m),
+                progress_cb=lambda p: bar.progress(p),
+            )
+            bar.progress(1.0)
+            status.success(f"🎉 Ready: {title}")
 
-            if actual_filename and os.path.exists(actual_filename):
-                with open(actual_filename, "rb") as file:
-                    file_bytes = file.read()
-                
-                os.remove(actual_filename)
-                progress_bar.progress(1.0)
-                status_placeholder.success(f"🎉 Ready: {video_title}")
-                
-                safe_title = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c in ' _-']).rstrip()
-                if not safe_title: safe_title = "downloaded_file"
-                
-                st.download_button(
-                    label=f"💾 Save {safe_title}.{final_ext}",
-                    data=file_bytes,
-                    file_name=f"{safe_title}.{final_ext}",
-                    mime=mime_type,
-                    key=f"dl_btn_{index}",
-                    use_container_width=True
-                )
-            else:
-                st.error("Extraction completed but target file was not found.")
+            st.session_state.results.append(
+                {"title": title, "filename": filename, "bytes": file_bytes, "mime": mime}
+            )
+
+            st.download_button(
+                label=f"💾 Save {filename}",
+                data=file_bytes,
+                file_name=filename,
+                mime=mime,
+                key=f"dl_btn_{index}",
+                use_container_width=True,
+            )
         except Exception as e:
-            status_placeholder.empty()
-            st.error(f"Cloud extraction failed: {str(e)}")
-    
-    st.balloons()
+            status.empty()
+            st.error(f"Extraction failed for link {index + 1}: {e}")
+
+    if st.session_state.results:
+        st.balloons()
+
+# Bundled ZIP
+if len(st.session_state.results) > 1:
+    st.markdown("#### 📦 Download Everything")
+    zip_bytes = build_zip(st.session_state.results)
+    st.download_button(
+        label=f"⬇️ Download all {len(st.session_state.results)} files as ZIP",
+        data=zip_bytes,
+        file_name="streamtune_downloads.zip",
+        mime="application/zip",
+        use_container_width=True,
+    )
