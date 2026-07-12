@@ -1,7 +1,6 @@
 import streamlit as st
 import yt_dlp
 import os
-import streamlit.components.v1 as components
 
 # Set up page configuration
 st.set_page_config(page_title="YouTube Multi-Downloader", page_icon="🎬", layout="centered")
@@ -15,7 +14,6 @@ if 'url_inputs' not in st.session_state:
 
 # --- Global Settings Section ---
 st.markdown("### ⚙️ Global Settings")
-# Using columns to place format selection neatly
 col_format, col_spacer = st.columns([2, 2])
 with col_format:
     format_type = st.selectbox("Select Download Format:", ["MP3 (Audio Only)", "MP4 (Full Video)"])
@@ -25,12 +23,10 @@ st.markdown("---")
 # --- Video Links Section ---
 st.markdown("### 🔗 Video Links")
 
-# Callback functions for dynamic UI adjustment to prevent state loss
 def add_input_field():
     st.session_state.url_inputs.append("")
 
 def remove_input_field(index_to_remove):
-    # Ensure at least one input field remains visible
     if len(st.session_state.url_inputs) > 1:
         st.session_state.url_inputs.pop(index_to_remove)
     else:
@@ -39,7 +35,6 @@ def remove_input_field(index_to_remove):
 # Wrap the links inside a clean bordered container
 with st.container(border=True):
     for i in range(len(st.session_state.url_inputs)):
-        # Create a split row: 85% for the text input, 15% for the delete button
         col_input, col_delete = st.columns([6, 1])
         
         with col_input:
@@ -48,38 +43,20 @@ with st.container(border=True):
                 value=st.session_state.url_inputs[i],
                 key=f"url_field_{i}",
                 placeholder="https://www.youtube.com/watch?v=...",
-                label_visibility="collapsed" if i > 0 else "visible" # Hide label for subsequent fields to look cleaner
+                label_visibility="collapsed" if i > 0 else "visible"
             )
             
         with col_delete:
-            # Adjust padding alignment for the trash button depending on whether it has a label above it
             st.markdown("<div style='padding-top: 28px;'></div>" if i == 0 else "<div style='padding-top: 4px;'></div>", unsafe_allow_html=True)
             st.button("🗑️", key=f"del_btn_{i}", on_click=remove_input_field, args=(i,))
 
     st.markdown(" ")
-    # Action button centered/aligned inside the container to add new fields
     st.button("➕ Add Another Video", on_click=add_input_field)
 
-# Filter out empty or whitespace-only strings from the input list
+# Filter out empty strings
 valid_urls = [url.strip() for url in st.session_state.url_inputs if url.strip()]
 
 st.markdown("---")
-
-# JavaScript helper for triggering automatic browser downloads
-def trigger_auto_download(file_bytes, filename, mime_type):
-    import base64
-    b64 = base64.b64encode(file_bytes).decode()
-    dl_script = f"""
-    <script>
-    var a = document.createElement('a');
-    a.href = 'data:{mime_type};base64,{b64}';
-    a.download = '{filename}';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    </script>
-    """
-    components.html(dl_script, height=0, width=0)
 
 # --- Main Download Execution Block ---
 if st.button("🚀 Start Batch Download", type="primary", disabled=len(valid_urls) == 0, use_container_width=True):
@@ -155,7 +132,7 @@ if st.button("🚀 Start Batch Download", type="primary", disabled=len(valid_url
                 progress_bar.progress(1.0)
                 status_placeholder.text(f"🎉 Ready: {video_title}")
                 
-                # Manual download button backup styled nicely
+                # Render a stable and efficient native download button
                 st.download_button(
                     label=f"💾 Save {safe_title}.{final_ext}",
                     data=file_bytes,
@@ -164,9 +141,6 @@ if st.button("🚀 Start Batch Download", type="primary", disabled=len(valid_url
                     key=f"dl_btn_{index}",
                     use_container_width=True
                 )
-                
-                # Automated browser download call
-                trigger_auto_download(file_bytes, f"{safe_title}.{final_ext}", mime_type)
             else:
                 st.error(f"Error: Post-processed file '{actual_filename}' not found.")
         except Exception as e:
