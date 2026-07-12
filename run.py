@@ -3,7 +3,7 @@ import subprocess
 import importlib.util
 
 # List of required Python packages to check and install
-REQUIRED_PACKAGES = ["streamlit", "yt-dlp"]
+REQUIRED_PACKAGES = ["streamlit", "yt-dlp", "static-ffmpeg"]
 
 def is_package_installed(package_name):
     """Check if a specific Python package is available in the current environment."""
