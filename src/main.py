@@ -129,12 +129,13 @@ if st.button("🚀 Process Batch & Download", type="primary", disabled=len(valid
 
         temp_template = f"media_dl_{index}_%(id)s.%(ext)s"
         
-        # ADVANCED CLOUD BYPASS: Injecting web_embedded client data & strict browser spoofing
+        # ADVANCED CLOUD BYPASS: Using cookies from major browsers to eliminate Error 152
         ydl_opts = {
             'outtmpl': temp_template,
             'quiet': True,
             'progress_hooks': [ytdl_hook],
             'noplaylist': True,
+            'cookiesfrombrowser': ('chrome', 'safari', 'edge', 'firefox'),
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web_embedded', 'tvhtml5'],
