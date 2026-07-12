@@ -78,15 +78,9 @@ if "url_inputs" not in st.session_state:
 if "results" not in st.session_state:
     st.session_state.results = []
 
-valid_urls = [u.strip() for u in st.session_state.url_inputs if u.strip()]
-
-col_stat1, col_stat2 = st.columns(2)
-with col_stat1:
-    st.metric(label="Queue Size", value=f"{len(valid_urls)} Video(s)")
-with col_stat2:
-    st.metric(label="Status", value="Ready" if len(valid_urls) > 0 else "Idle")
-
-st.markdown(" ")
+# ----------------------------------------------------------------------
+# Output preferences
+# ----------------------------------------------------------------------
 st.markdown("#### ⚙️ Choose Output Preferences")
 format_type = st.radio(
     "Select Download Format:",
@@ -125,7 +119,10 @@ with st.container(border=True):
     st.markdown(" ")
     st.button("✨ Add Next Track", on_click=add_input_field, type="secondary")
 
-# De-duplicate
+# ----------------------------------------------------------------------
+# Compute valid URLs AFTER the text inputs are rendered
+# (this is what fixes the "must click Add first" bug)
+# ----------------------------------------------------------------------
 seen = set()
 valid_urls = []
 for u in st.session_state.url_inputs:
@@ -133,6 +130,14 @@ for u in st.session_state.url_inputs:
     if u and u not in seen:
         seen.add(u)
         valid_urls.append(u)
+
+st.markdown(" ")
+
+col_stat1, col_stat2 = st.columns(2)
+with col_stat1:
+    st.metric(label="Queue Size", value=f"{len(valid_urls)} Video(s)")
+with col_stat2:
+    st.metric(label="Status", value="Ready" if len(valid_urls) > 0 else "Idle")
 
 st.markdown(" ")
 
@@ -172,7 +177,6 @@ def download_one(url, index, fmt, status_cb, progress_cb):
         }
         if FFMPEG_DIR:
             ydl_opts["ffmpeg_location"] = FFMPEG_DIR
-        # Use cookies.txt if present (helps bypass bot checks on cloud)
         if os.path.exists("cookies.txt"):
             ydl_opts["cookiefile"] = "cookies.txt"
 
@@ -269,7 +273,9 @@ if st.button("🚀 Process Batch & Download", type="primary",
     if st.session_state.results:
         st.balloons()
 
-# Bundled ZIP
+# ----------------------------------------------------------------------
+# Bundled ZIP download
+# ----------------------------------------------------------------------
 if len(st.session_state.results) > 1:
     st.markdown("#### 📦 Download Everything")
     zip_bytes = build_zip(st.session_state.results)
