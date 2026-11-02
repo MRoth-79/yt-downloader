@@ -1,0 +1,51 @@
+# Locked dark theme for StreamTune. Custom layout CSS in src/main.py uses the same palette.
+[theme]
+base = "dark"
+primaryColor = "#5346d4"
+backgroundColor = "#0c1220"
+secondaryBackgroundColor = "#161e31"
+textColor = "#e8eef9"
+borderColor = "#2c3854"
+linkColor = "#9eb0ff"
+codeBackgroundColor = "#12192b"
+codeTextColor = "#d5def2"
+showWidgetBorder = true
+showSidebarBorder = false
+baseRadius = "0.8rem"
+buttonRadius = "0.75rem"
+linkUnderline = false
+baseFontSize = 16
+baseFontWeight = 400
+font = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
+headingFont = "Fraunces:https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,650&display=swap"
+headingFontWeights = [560, 560, 560, 500, 500, 500]
+paddingTop = "1.15rem"
+paddingBottom = "2.75rem"
+redColor = "#e06a6a"
+greenColor = "#3dbf86"
+blueColor = "#6d8dff"
+orangeColor = "#e0a15a"
+yellowColor = "#e3c56a"
+violetColor = "#8b7cf6"
+grayColor = "#8b97ad"
+redTextColor = "#ffc1c1"
+greenTextColor = "#b7f3d4"
+blueTextColor = "#c9d6ff"
+orangeTextColor = "#ffd7a8"
+violetTextColor = "#ddd6ff"
+grayTextColor = "#c5cee0"
+redBackgroundColor = "#3a1d24"
+greenBackgroundColor = "#143026"
+blueBackgroundColor = "#1a2744"
+orangeBackgroundColor = "#3a2c18"
+violetBackgroundColor = "#241c40"
+grayBackgroundColor = "#222a3c"
+
+[theme.sidebar]
+backgroundColor = "#0c1220"
+secondaryBackgroundColor = "#161e31"
+textColor = "#e8eef9"
+borderColor = "#2c3854"
+primaryColor = "#5346d4"
+linkColor = "#9eb0ff"
+codeBackgroundColor = "#12192b"
