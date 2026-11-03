@@ -1,5 +1,7 @@
 # StreamTune
 
+[![CI](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml)
+
 Local Streamlit app to convert authorized media sources to MP3 or MP4.
 
 ## Run
