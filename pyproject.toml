@@ -1,0 +1,17 @@
+[project]
+name = "streamtune"
+version = "4.2.0"
+description = "Local Streamlit app to convert authorized media sources to MP3 or MP4."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

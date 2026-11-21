@@ -5,3 +5,13 @@ venv/
 build/
 dist/
 *.exe
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Local secrets and generated media (never commit these)
+cookies.txt
+*.mp3
+*.mp4
+*.zip
