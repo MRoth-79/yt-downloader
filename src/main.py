@@ -1,636 +1,144 @@
-import os
-import io
-import sys
+import hashlib
 import html
-import shutil
-import zipfile
-import tempfile
-import subprocess
-import importlib
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 import streamlit as st
+from yt_dlp.version import __version__ as YTDLP_VERSION
 
-APP_UI_VERSION = "4.1"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+import downloader as dl
 
-FORMAT_MP3 = "MP3"
-FORMAT_MP4 = "MP4"
+APP_UI_VERSION = "4.2"
+MAX_PARALLEL = 2
+STYLE_FILE = Path(__file__).resolve().with_name("styles.css")
+
 STATUS_PENDING = "pending"
 STATUS_PROCESSING = "processing"
 STATUS_COMPLETED = "completed"
 STATUS_ERROR = "error"
 
-
-def ensure_package(module_name, pip_name=None):
-    try:
-        return importlib.import_module(module_name)
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name or module_name])
-        return importlib.import_module(module_name)
+st.set_page_config(
+    page_title="StreamTune",
+    page_icon=":material/graphic_eq:",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
 
 
 @st.cache_resource(show_spinner="Setting up FFmpeg (first run only)...")
-def setup_ffmpeg():
-    existing = shutil.which("ffmpeg")
-    if existing:
-        return os.path.dirname(existing)
-    static_ffmpeg = ensure_package("static_ffmpeg", "static-ffmpeg")
-    static_ffmpeg.add_paths()
-    ffmpeg_path = shutil.which("ffmpeg")
-    return os.path.dirname(ffmpeg_path) if ffmpeg_path else None
-
-
-yt_dlp = ensure_package("yt_dlp", "yt-dlp")
-FFMPEG_DIR = setup_ffmpeg()
+def get_ffmpeg_dir():
+    return dl.ensure_ffmpeg()
 
 
 def inject_styles():
-    st.html(
-        """
-        <style>
-        /* Custom layout. Widget colors, type, and radii live in .streamlit/config.toml. */
-
-        :root {
-            --bg-base: #0c1220;
-            --bg-card: #161e31;
-            --bg-inset: #10182a;
-            --border: #2c3854;
-            --text: #e8eef9;
-            --text-muted: #b7c3d9;
-            --indigo: #5346d4;
-            --cyan: #67e8f9;
-            --radius: 16px;
-            --radius-sm: 12px;
-        }
-
-        .stApp {
-            background-color: var(--bg-base) !important;
-            background-image:
-                radial-gradient(880px 380px at 8% -12%, rgba(83, 70, 212, 0.2), transparent 58%),
-                radial-gradient(640px 320px at 100% -8%, rgba(103, 232, 249, 0.07), transparent 46%) !important;
-            color: var(--text);
-            font-family: Manrope, "Segoe UI", sans-serif;
-        }
-
-        .block-container {
-            max-width: 800px;
-        }
-
-        #MainMenu, footer { visibility: hidden; }
-        header[data-testid="stHeader"] { background: transparent; }
-
-        .stApp :focus-visible {
-            outline: 2px solid var(--cyan);
-            outline-offset: 2px;
-        }
-
-        .app-topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.85rem 1.25rem;
-            margin: 0 0 1.35rem;
-            flex-wrap: wrap;
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 0.7rem;
-            min-width: 0;
-        }
-
-        .brand-glyph {
-            width: 2.15rem;
-            height: 2.15rem;
-            border-radius: 0.7rem;
-            display: inline-flex;
-            align-items: flex-end;
-            justify-content: center;
-            gap: 0.16rem;
-            padding: 0.42rem 0.4rem;
-            background: linear-gradient(160deg, #3a3278 0%, #161e31 70%);
-            border: 1px solid #3d4c72;
-            box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.12);
-            flex: none;
-        }
-
-        .brand-glyph span {
-            display: block;
-            width: 0.22rem;
-            border-radius: 999px;
-            background: #d9e2ff;
-        }
-
-        .brand-glyph span:nth-child(1) { height: 0.45rem; }
-        .brand-glyph span:nth-child(2) { height: 0.85rem; background: var(--cyan); }
-        .brand-glyph span:nth-child(3) { height: 0.62rem; }
-
-        .brand-name {
-            font-family: Fraunces, Georgia, serif;
-            font-size: 1.35rem;
-            font-weight: 560;
-            letter-spacing: -0.03em;
-            line-height: 1;
-            color: #f4f7ff;
-        }
-
-        .brand-version {
-            display: block;
-            margin-top: 0.18rem;
-            font-size: 0.72rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            color: var(--text-muted);
-        }
-
-        .sys-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            font-size: 0.78rem;
-            font-weight: 650;
-            padding: 0.32rem 0.7rem 0.32rem 0.45rem;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            background: var(--bg-card);
-            color: var(--text);
-            white-space: nowrap;
-        }
-
-        .sys-mark {
-            width: 0.55rem;
-            height: 0.55rem;
-            flex: none;
-        }
-
-        .sys-pill.ok .sys-mark {
-            border-radius: 999px;
-            background: #3dbf86;
-            box-shadow: 0 0 0 3px rgba(61, 191, 134, 0.18);
-        }
-
-        .sys-pill.bad .sys-mark {
-            border-radius: 2px;
-            background: transparent;
-            border: 2px solid #ffb4b4;
-        }
-
-        .hero-card {
-            position: relative;
-            overflow: hidden;
-            background:
-                linear-gradient(180deg, rgba(83, 70, 212, 0.16), rgba(22, 30, 49, 0.2) 32%, var(--bg-card) 100%);
-            border: 1px solid var(--border);
-            border-radius: 18px;
-            padding: 1.35rem 1.3rem 1.15rem;
-            box-shadow: 0 16px 40px rgba(3, 6, 16, 0.28);
-            margin-bottom: 1.35rem;
-        }
-
-        .hero-card::before {
-            content: "";
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, var(--cyan), var(--indigo) 46%, transparent 88%);
-        }
-
-        .hero-title {
-            font-family: Fraunces, Georgia, serif;
-            font-size: clamp(1.7rem, 4.6vw, 2.2rem);
-            font-weight: 560;
-            letter-spacing: -0.03em;
-            line-height: 1.15;
-            margin: 0 0 0.45rem;
-            color: #f7f8ff;
-        }
-
-        .hero-lead {
-            margin: 0;
-            max-width: 40rem;
-            color: var(--text-muted);
-            line-height: 1.55;
-            font-size: 1rem;
-        }
-
-        .flow {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 0.4rem;
-            list-style: none;
-            margin: 1rem 0 0;
-            padding: 0;
-        }
-
-        .flow li {
-            position: relative;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            color: #d7def2;
-            background: rgba(8, 12, 22, 0.28);
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            padding: 0.22rem 0.65rem 0.22rem 0.28rem;
-            font-size: 0.78rem;
-            font-weight: 650;
-        }
-
-        .flow li:not(:last-child)::after {
-            content: "";
-            position: absolute;
-            left: calc(100% + 0.08rem);
-            top: 50%;
-            width: 0.45rem;
-            height: 1px;
-            background: var(--cyan);
-        }
-
-        .flow-index {
-            width: 1.15rem;
-            height: 1.15rem;
-            border-radius: 999px;
-            display: inline-grid;
-            place-items: center;
-            background: var(--indigo);
-            color: #fff;
-            font-size: 0.68rem;
-            font-weight: 700;
-        }
-
-        .section-title {
-            font-size: 1.02rem;
-            font-weight: 700;
-            letter-spacing: -0.015em;
-            color: var(--text);
-            margin: 0 0 0.55rem;
-        }
-
-        .section-count {
-            display: inline-block;
-            margin-left: 0.4rem;
-            padding: 0.05rem 0.45rem;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            color: var(--text-muted);
-            font-size: 0.75rem;
-            font-weight: 650;
-            vertical-align: 0.1rem;
-        }
-
-        .helper-text {
-            font-size: 0.92rem;
-            color: var(--text-muted);
-            margin: 0 0 0.85rem;
-            line-height: 1.5;
-        }
-
-        .st-key-draft_url_input [data-testid="stWidgetLabel"],
-        .st-key-output_format [data-testid="stWidgetLabel"] {
-            color: var(--text);
-            font-weight: 700;
-        }
-
-        .st-key-draft_url_input input {
-            background: var(--bg-inset) !important;
-            color: var(--text) !important;
-            border: 1px solid #3d4d6e !important;
-            border-radius: 0.8rem !important;
-            min-height: 3.1rem;
-            font-size: 1.02rem;
-            padding: 0.75rem 0.9rem !important;
-        }
-
-        .st-key-draft_url_input input::placeholder {
-            color: #aeb9cf;
-            opacity: 1;
-        }
-
-        .st-key-draft_url_input input:focus-visible {
-            border-color: #8b7cf6 !important;
-            box-shadow: 0 0 0 4px rgba(103, 232, 249, 0.16) !important;
-        }
-
-        .st-key-output_format [data-testid="stRadio"] {
-            width: 100%;
-        }
-
-        .st-key-output_format [data-testid="stRadioGroup"] {
-            display: grid !important;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.75rem;
-            width: 100% !important;
-            align-items: stretch !important;
-        }
-
-        .st-key-output_format [data-testid="stRadioGroup"] > div {
-            min-width: 0;
-            margin: 0 !important;
-            padding: 0.85rem 0.95rem 0.8rem;
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            background: var(--bg-inset);
-        }
-
-        .st-key-output_format [data-testid="stRadioGroup"] > div[data-selected="true"] {
-            border-color: #8b7cf6;
-            background: linear-gradient(180deg, rgba(83, 70, 212, 0.28), rgba(16, 24, 42, 0.94));
-            box-shadow: inset 3px 0 0 var(--cyan);
-        }
-
-        .st-key-output_format [data-testid="stRadioOption"] {
-            font-weight: 750;
-            color: var(--text);
-        }
-
-        .st-key-output_format [data-testid="stRadioCaption"] {
-            color: var(--text-muted);
-            font-size: 0.84rem;
-            line-height: 1.45;
-        }
-
-        .st-key-output_format [data-testid="stRadioGroup"] > div:has([data-focus-visible="true"]) {
-            outline: 2px solid var(--cyan);
-            outline-offset: 2px;
-        }
-
-        .st-key-add_to_queue button,
-        .st-key-start_conversion button,
-        .st-key-zip_download button,
-        [class*="st-key-saved_dl_"] button,
-        [class*="st-key-rm_"] button {
-            min-height: 2.75rem;
-            font-weight: 700;
-            border-radius: 0.75rem !important;
-        }
-
-        .st-key-add_to_queue button,
-        [class*="st-key-saved_dl_"] button,
-        [class*="st-key-rm_"] button {
-            background: #1c2640 !important;
-            color: var(--text) !important;
-            border: 1px solid #4a5a80 !important;
-        }
-
-        .st-key-add_to_queue button:hover,
-        [class*="st-key-saved_dl_"] button:hover,
-        [class*="st-key-rm_"] button:hover {
-            border-color: var(--cyan) !important;
-            background: #243050 !important;
-        }
-
-        .st-key-start_conversion button,
-        .st-key-zip_download button {
-            background: var(--indigo) !important;
-            color: #fff !important;
-            border: 1px solid #6d62e4 !important;
-            box-shadow: 0 10px 24px rgba(83, 70, 212, 0.28);
-        }
-
-        .st-key-start_conversion button:hover:not(:disabled),
-        .st-key-zip_download button:hover:not(:disabled) {
-            border-color: var(--cyan) !important;
-        }
-
-        .st-key-start_conversion button:disabled {
-            opacity: 1 !important;
-            background: #232a3d !important;
-            color: #9aa6bf !important;
-            border: 1px dashed #4a5874 !important;
-            box-shadow: none !important;
-            cursor: not-allowed !important;
-        }
-
-        [class*="st-key-rm_"] button {
-            min-height: 2.25rem;
-        }
-
-        .queue-card {
-            border: 1px solid var(--border);
-            border-left-width: 3px;
-            border-radius: var(--radius-sm);
-            padding: 0.85rem 0.95rem 0.75rem;
-            margin-bottom: 0.35rem;
-            background: var(--bg-inset);
-        }
-
-        .queue-card.is-pending { border-left-style: dashed; border-left-color: #8b97ad; }
-        .queue-card.is-processing { border-left-color: #8b7cf6; }
-        .queue-card.is-completed { border-left-color: #3dbf86; }
-        .queue-card.is-error { border-left-color: #e06a6a; }
-
-        .queue-head {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 0.75rem;
-        }
-
-        .queue-card-title {
-            font-weight: 700;
-            color: #f4f7ff;
-            font-size: 1rem;
-            line-height: 1.35;
-            margin: 0;
-            word-break: break-word;
-        }
-
-        .queue-meta {
-            display: grid;
-            gap: 0.45rem;
-            margin: 0.7rem 0 0;
-        }
-
-        .queue-meta div {
-            min-width: 0;
-        }
-
-        .queue-meta dt {
-            margin: 0;
-            font-size: 0.75rem;
-            font-weight: 700;
-            letter-spacing: 0.01em;
-            color: #aeb9cf;
-        }
-
-        .queue-meta dd {
-            margin: 0.12rem 0 0;
-            color: var(--text-muted);
-            font-size: 0.86rem;
-            line-height: 1.4;
-            word-break: break-word;
-        }
-
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            flex: none;
-            font-size: 0.72rem;
-            font-weight: 700;
-            padding: 0.22rem 0.5rem;
-            border-radius: 999px;
-            border: 1px solid transparent;
-        }
-
-        .status-badge::before {
-            content: "";
-            width: 0.42rem;
-            height: 0.42rem;
-            flex: none;
-        }
-
-        .status-badge.pending {
-            color: #d7deee;
-            background: #1c2438;
-            border-color: #3a4660;
-        }
-
-        .status-badge.pending::before {
-            border: 1.5px solid currentColor;
-            border-radius: 999px;
-        }
-
-        .status-badge.processing {
-            color: #d6e0ff;
-            background: #1a2340;
-            border-color: #44558a;
-        }
-
-        .status-badge.processing::before {
-            background: currentColor;
-            border-radius: 2px;
-        }
-
-        .status-badge.completed {
-            color: #c9f6df;
-            background: #13281f;
-            border-color: #2f6b4e;
-        }
-
-        .status-badge.completed::before {
-            background: currentColor;
-            border-radius: 999px;
-        }
-
-        .status-badge.error {
-            color: #ffd0d0;
-            background: #2a161c;
-            border-color: #7a3b3b;
-        }
-
-        .status-badge.error::before {
-            background: currentColor;
-            border-radius: 1px;
-            transform: rotate(45deg);
-        }
-
-        .empty-queue {
-            text-align: center;
-            padding: 0.85rem 0.4rem 0.35rem;
-        }
-
-        .empty-mark {
-            width: 2.3rem;
-            height: 2.3rem;
-            margin: 0 auto 0.75rem;
-            border-radius: 999px;
-            border: 1px dashed #4a5a80;
-            background: radial-gradient(circle at 50% 50%, rgba(103, 232, 249, 0.18), transparent 62%);
-        }
-
-        .empty-title {
-            margin: 0 0 0.35rem;
-            color: var(--text);
-            font-size: 1.02rem;
-            font-weight: 700;
-        }
-
-        .empty-copy {
-            margin: 0 auto;
-            max-width: 34rem;
-            color: var(--text-muted);
-            font-size: 0.92rem;
-            line-height: 1.5;
-        }
-
-        @media (max-width: 700px) {
-            .app-topbar {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-
-            .st-key-output_format [data-testid="stRadioGroup"] {
-                grid-template-columns: 1fr !important;
-            }
-
-            .queue-head {
-                flex-direction: column;
-            }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            .stApp *,
-            .stApp *::before,
-            .stApp *::after {
-                animation-duration: 0.01ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: 0.01ms !important;
-                scroll-behavior: auto !important;
-            }
-        }
-        </style>
-        """
-    )
+    css = STYLE_FILE.read_text(encoding="utf-8")
+    st.html(f"<style>{css}</style>")
 
 
 def init_session_state():
-    if "queue" not in st.session_state:
-        st.session_state.queue = []
-    if "item_state" not in st.session_state:
-        st.session_state.item_state = {}
-    if "results" not in st.session_state:
-        st.session_state.results = []
-    if "draft_url_input" not in st.session_state:
-        st.session_state.draft_url_input = ""
+    defaults = {
+        "queue": [],
+        "item_state": {},
+        "results": [],
+        "draft_url_input": "",
+        "zip_cache": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def format_label(fmt: str) -> str:
-    return "MP3" if "MP3" in fmt else "MP4"
+def digest(url: str) -> str:
+    """Short, stable key suffix for widgets tied to a URL."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
 
 
 def format_choice(fmt: str) -> str:
-    if fmt == FORMAT_MP3:
+    if fmt == dl.FORMAT_MP3:
         return ":material/audio_file: MP3"
     return ":material/movie: MP4"
 
 
+# ----------------------------------------------------------------------
+# Queue and result state
+# ----------------------------------------------------------------------
 def add_to_queue():
-    url = (st.session_state.draft_url_input or "").strip()
-    if not url:
+    try:
+        url = dl.validate_url(st.session_state.draft_url_input)
+    except ValueError as exc:
+        st.toast(str(exc), icon=":material/error:")
         return
-    if url not in st.session_state.queue:
-        st.session_state.queue.append(url)
-        st.session_state.item_state[url] = {
-            "status": STATUS_PENDING,
-            "title": "",
-            "error": "",
-        }
+    if url in st.session_state.queue:
+        st.toast("That link is already in the queue.", icon=":material/info:")
+        return
+    try:
+        info = dl.fetch_info(url)
+    except Exception as exc:
+        message, _ = dl.explain_error(exc)
+        st.toast(f"Could not read this link. {message}", icon=":material/error:")
+        return
+
+    st.session_state.queue.append(url)
+    st.session_state.item_state[url] = {
+        "status": STATUS_PENDING,
+        "title": info["title"],
+        "thumbnail": info["thumbnail"],
+        "duration": info["duration"],
+        "uploader": info["uploader"],
+        "error": "",
+        "detail": "",
+        "options": None,
+    }
     st.session_state.draft_url_input = ""
 
 
-def remove_from_queue(index: int):
-    if 0 <= index < len(st.session_state.queue):
-        url = st.session_state.queue.pop(index)
-        st.session_state.item_state.pop(url, None)
-        st.session_state.results = [r for r in st.session_state.results if r.get("url") != url]
+def discard_result(url: str):
+    kept = []
+    for item in st.session_state.results:
+        if item["url"] == url:
+            dl.discard_workdir(item["workdir"])
+        else:
+            kept.append(item)
+    st.session_state.results = kept
 
 
+def drop_zip_cache():
+    cache = st.session_state.zip_cache
+    if cache:
+        dl.remove_file(cache["path"])
+    st.session_state.zip_cache = None
+
+
+def remove_from_queue(url: str):
+    if url in st.session_state.queue:
+        st.session_state.queue.remove(url)
+    st.session_state.item_state.pop(url, None)
+    discard_result(url)
+    drop_zip_cache()
+
+
+def needs_conversion(url: str, fmt: str, quality: str) -> bool:
+    state = st.session_state.item_state.get(url, {})
+    if state.get("status") != STATUS_COMPLETED:
+        return True
+    return tuple(state.get("options") or ()) != (fmt, quality)
+
+
+def ensure_zip() -> Path:
+    results = st.session_state.results
+    key = [item["path"] for item in results]
+    cache = st.session_state.zip_cache
+    if cache and cache["key"] == key and Path(cache["path"]).is_file():
+        return Path(cache["path"])
+    drop_zip_cache()
+    path = dl.build_zip([(item["filename"], Path(item["path"])) for item in results])
+    st.session_state.zip_cache = {"key": key, "path": str(path)}
+    return path
+
+
+# ----------------------------------------------------------------------
+# Rendering
+# ----------------------------------------------------------------------
 def render_status_badge(status: str) -> str:
     labels = {
         STATUS_PENDING: ("Waiting", "pending"),
@@ -642,171 +150,146 @@ def render_status_badge(status: str) -> str:
     return f'<span class="status-badge {css}" aria-label="Status: {text}">{text}</span>'
 
 
-def safe_name(title, fallback):
-    cleaned = "".join(c for c in title if c.isalnum() or c in (" ", "_", "-")).strip()
-    return cleaned or fallback
+def queue_card_html(url: str, state: dict, fmt: str, quality: str) -> str:
+    status = state.get("status", STATUS_PENDING)
+    title = html.escape(state.get("title") or url)
+    thumbnail = state.get("thumbnail") or ""
+    thumb_html = (
+        f'<img class="queue-thumb" src="{html.escape(thumbnail)}" alt="" loading="lazy" '
+        'referrerpolicy="no-referrer">'
+        if thumbnail
+        else ""
+    )
+    opt_fmt, opt_quality = state.get("options") or (fmt, quality)
+    format_text = f"{opt_fmt} · {dl.quality_label(opt_fmt, opt_quality)}"
+    rows = [("Source", url), ("Format", format_text)]
+    duration = dl.format_duration(state.get("duration"))
+    if duration:
+        rows.append(("Length", duration))
+    meta = "".join(f"<div><dt>{label}</dt><dd>{html.escape(value)}</dd></div>" for label, value in rows)
+    return (
+        f'<article class="queue-card is-{status}">'
+        f'<div class="queue-row">{thumb_html}'
+        f'<div class="queue-main">'
+        f'<div class="queue-head"><h3 class="queue-card-title">{title}</h3>'
+        f"{render_status_badge(status)}</div>"
+        f'<dl class="queue-meta">{meta}</dl>'
+        "</div></div></article>"
+    )
 
 
-def cookies_path():
-    path = PROJECT_ROOT / "cookies.txt"
-    return str(path) if path.is_file() else None
+def render_queue(slot, fmt: str, quality: str, show_actions: bool):
+    """Draw the queue into ``slot`` (an ``st.empty`` placeholder).
 
-
-def download_one(url, index, fmt, status_cb, progress_cb):
-    def hook(d):
-        if d["status"] == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            downloaded = d.get("downloaded_bytes", 0)
-            if total > 0:
-                pct = min(max(downloaded / total, 0.0), 1.0)
-                progress_cb(pct)
-                status_cb(f"Downloading… {int(pct * 100)}%")
-        elif d["status"] == "finished":
-            status_cb("Processing file…")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        outtmpl = str(Path(tmpdir) / f"item_{index}_%(id)s.%(ext)s")
-
-        ydl_opts = {
-            "outtmpl": outtmpl,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "progress_hooks": [hook],
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-        }
-        if FFMPEG_DIR:
-            ydl_opts["ffmpeg_location"] = FFMPEG_DIR
-        cookiefile = cookies_path()
-        if cookiefile:
-            ydl_opts["cookiefile"] = cookiefile
-
-        if "MP3" in fmt:
-            ydl_opts.update({
-                "format": "bestaudio/best",
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }],
-            })
-            final_ext = "mp3"
-            mime = "audio/mpeg"
-        else:
-            ydl_opts.update({
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "merge_output_format": "mp4",
-            })
-            final_ext = "mp4"
-            mime = "video/mp4"
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get("title", f"video_{index}")
-
-        candidates = list(Path(tmpdir).glob(f"item_{index}_*.{final_ext}"))
-        if not candidates:
-            candidates = list(Path(tmpdir).glob(f"item_{index}_*.*"))
-        if not candidates:
-            raise FileNotFoundError("No output file was produced by yt-dlp.")
-
-        output_file = max(candidates, key=lambda p: p.stat().st_mtime)
-        file_bytes = output_file.read_bytes()
-
-    filename = f"{safe_name(title, f'download_{index}')}.{final_ext}"
-    return title, filename, file_bytes, mime
-
-
-def build_zip(results):
-    buffer = io.BytesIO()
-    used = {}
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for r in results:
-            name = r["filename"]
-            if name in used:
-                used[name] += 1
-                stem, ext = os.path.splitext(name)
-                name = f"{stem}_{used[name]}{ext}"
-            else:
-                used[name] = 0
-            zf.writestr(name, r["bytes"])
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def render_queue_cards(queue, fmt: str):
-    if not queue:
-        st.markdown(
-            """
-            <div class="empty-queue" role="status">
-                <div class="empty-mark" aria-hidden="true"></div>
-                <p class="empty-title">Nothing queued yet</p>
-                <p class="empty-copy">Paste a media URL above, then choose Add to queue.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-
-    for i, url in enumerate(queue):
-        state = st.session_state.item_state.get(url, {})
-        status = state.get("status", STATUS_PENDING)
-        title = html.escape(state.get("title") or f"Item {i + 1}")
-        safe_url = html.escape(url)
-        err = state.get("error", "")
-        badge = render_status_badge(status)
-        st.markdown(
-            f"""
-            <article class="queue-card is-{status}">
-                <div class="queue-head">
-                    <h3 class="queue-card-title">{title}</h3>
-                    {badge}
+    Remove buttons are only drawn in the final render of a run, so that widget keys are unique.
+    """
+    queue = st.session_state.queue
+    with slot.container(border=True):
+        if not queue:
+            st.markdown(
+                """
+                <div class="empty-queue" role="status">
+                    <div class="empty-mark" aria-hidden="true"></div>
+                    <p class="empty-title">Nothing queued yet</p>
+                    <p class="empty-copy">Paste a media URL above, then choose Add to queue.</p>
                 </div>
-                <dl class="queue-meta">
-                    <div>
-                        <dt>Source</dt>
-                        <dd>{safe_url}</dd>
-                    </div>
-                    <div>
-                        <dt>Format</dt>
-                        <dd>{format_label(fmt)}</dd>
-                    </div>
-                </dl>
-            </article>
-            """,
-            unsafe_allow_html=True,
-        )
-        if status == STATUS_ERROR and err:
-            st.caption(f"Error detail: {err}")
-        with st.container(horizontal=True, horizontal_alignment="right"):
-            st.button(
-                "Remove",
-                key=f"rm_{i}_{hash(url) % 10_000}",
-                on_click=remove_from_queue,
-                args=(i,),
-                icon=":material/delete:",
-                help="Remove this item from the queue",
+                """,
+                unsafe_allow_html=True,
             )
+            return
+
+        for url in queue:
+            state = st.session_state.item_state.get(url, {})
+            st.markdown(queue_card_html(url, state, fmt, quality), unsafe_allow_html=True)
+            if state.get("status") == STATUS_ERROR and state.get("detail"):
+                st.caption(f"Error detail: {state['detail'][:300]}")
+            if show_actions:
+                with st.container(horizontal=True, horizontal_alignment="right"):
+                    st.button(
+                        "Remove",
+                        key=f"rm_{digest(url)}",
+                        on_click=remove_from_queue,
+                        args=(url,),
+                        icon=":material/delete:",
+                        help="Remove this item from the queue",
+                    )
+
+
+def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
+    """Convert ``urls`` in parallel and show per-item progress. Returns the number of successes."""
+    progress: dict[str, tuple[float | None, str]] = {}
+
+    def writer(url: str):
+        def report(fraction, text):
+            progress[url] = (fraction, text)
+
+        return report
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
+        for url in urls:
+            state = st.session_state.item_state[url]
+            state.update(status=STATUS_PROCESSING, error="", detail="")
+            futures[url] = pool.submit(dl.download, url, fmt, quality, writer(url))
+
+        slots = {url: st.empty() for url in urls}
+        render_queue(queue_slot, fmt, quality, show_actions=False)
+
+        while True:
+            _, not_done = wait(list(futures.values()), timeout=0.25)
+            for url in urls:
+                if futures[url].done():
+                    continue
+                fraction, text = progress.get(url, (0.0, "Starting…"))
+                title = st.session_state.item_state[url].get("title") or url
+                slots[url].progress(fraction or 0.0, text=f"{title}: {text}")
+            if not not_done:
+                break
+
+    successes = 0
+    for url in urls:
+        state = st.session_state.item_state[url]
+        slot = slots[url]
+        try:
+            result = futures[url].result()
+        except Exception as exc:
+            friendly, detail = dl.explain_error(exc)
+            state.update(status=STATUS_ERROR, error=friendly, detail=detail)
+            slot.error(f"{state.get('title') or url}: {friendly}", icon=":material/error:")
+            continue
+
+        successes += 1
+        state.update(
+            status=STATUS_COMPLETED,
+            title=result.title,
+            error="",
+            detail="",
+            options=(fmt, quality),
+        )
+        discard_result(url)
+        st.session_state.results.append(
+            {
+                "url": url,
+                "title": result.title,
+                "filename": result.filename,
+                "path": str(result.path),
+                "mime": result.mime,
+                "workdir": str(result.workdir),
+            }
+        )
+        slot.success(f"Completed: {result.title}", icon=":material/check_circle:")
+
+    drop_zip_cache()
+    return successes
 
 
 # ----------------------------------------------------------------------
 # App
 # ----------------------------------------------------------------------
-st.set_page_config(
-    page_title="StreamTune",
-    page_icon=":material/graphic_eq:",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
-
 inject_styles()
 init_session_state()
 
-ffmpeg_ok = bool(FFMPEG_DIR)
+ffmpeg_ok = get_ffmpeg_dir() is not None
 ffmpeg_label = "FFmpeg ready" if ffmpeg_ok else "FFmpeg unavailable"
 ffmpeg_class = "ok" if ffmpeg_ok else "bad"
 queue_len = len(st.session_state.queue)
@@ -865,7 +348,7 @@ with st.container(border=True, key="source_card"):
         placeholder="https://",
         help="Only add sources you have permission to convert.",
     )
-    st.caption("One authorized URL per queue item.")
+    st.caption("One authorized URL per queue item. The title and preview are read when you add it.")
     st.button(
         "Add to queue",
         type="secondary",
@@ -873,14 +356,14 @@ with st.container(border=True, key="source_card"):
         on_click=add_to_queue,
         icon=":material/playlist_add:",
         key="add_to_queue",
-        help="Adds the URL above to the conversion queue",
+        help="Checks the URL and adds it to the conversion queue",
     )
 
 st.space("small")
 with st.container(border=True, key="format_card"):
     format_type = st.radio(
         "Output format",
-        [FORMAT_MP3, FORMAT_MP4],
+        [dl.FORMAT_MP3, dl.FORMAT_MP4],
         index=0,
         horizontal=True,
         width="stretch",
@@ -892,15 +375,27 @@ with st.container(border=True, key="format_card"):
         ],
         help="Applies to every item in this conversion.",
     )
+    if format_type == dl.FORMAT_MP3:
+        quality = st.selectbox(
+            "MP3 bitrate",
+            options=list(dl.MP3_BITRATES),
+            format_func=dl.MP3_BITRATES.get,
+            key="mp3_bitrate",
+            help="Higher bitrate means better audio and larger files.",
+        )
+    else:
+        quality = st.selectbox(
+            "Maximum resolution",
+            options=list(dl.MP4_HEIGHTS),
+            format_func=dl.MP4_HEIGHTS.get,
+            key="mp4_height",
+            help="Uses the best available video up to this resolution.",
+        )
 
 st.space("small")
 queue_count = f'<span class="section-count">{queue_len}</span>' if queue_len else ""
-st.markdown(
-    f'<h2 class="section-title">Queue{queue_count}</h2>',
-    unsafe_allow_html=True,
-)
-with st.container(border=True, key="queue_panel"):
-    render_queue_cards(st.session_state.queue, format_type)
+st.markdown(f'<h2 class="section-title">Queue{queue_count}</h2>', unsafe_allow_html=True)
+queue_slot = st.empty()  # filled below, after any conversion has updated the item states
 
 can_convert = queue_len > 0 and ffmpeg_ok
 
@@ -934,69 +429,28 @@ if st.button(
     width="stretch",
     icon=":material/play_arrow:",
     key="start_conversion",
-    help="Convert all queued items to the selected MP3 or MP4 format",
+    help="Convert queued items that are not done yet. Failed items are retried.",
 ):
-    st.session_state.results = []
-    urls = list(st.session_state.queue)
-    total = len(urls)
+    pending = [url for url in st.session_state.queue if needs_conversion(url, format_type, quality)]
+    if not pending:
+        st.info("Everything in the queue is already converted with these settings.")
+    else:
+        successes = run_conversions(pending, format_type, quality, queue_slot)
+        if successes:
+            st.balloons()
 
-    for index, url in enumerate(urls):
-        st.session_state.item_state[url] = {
-            "status": STATUS_PROCESSING,
-            "title": st.session_state.item_state.get(url, {}).get("title", f"Item {index + 1}"),
-            "error": "",
-        }
-        st.markdown(f"**Converting item {index + 1} of {total}**")
-        status = st.empty()
-        bar = st.progress(0)
-        status.caption("Starting…")
-
-        try:
-            title, filename, file_bytes, mime = download_one(
-                url,
-                index,
-                format_type,
-                status_cb=lambda m: status.caption(m),
-                progress_cb=lambda p: bar.progress(p),
-            )
-            bar.progress(1.0)
-            status.success(f"Completed: {title}", icon=":material/check_circle:")
-            st.session_state.item_state[url] = {
-                "status": STATUS_COMPLETED,
-                "title": title,
-                "error": "",
-            }
-            st.session_state.results.append({
-                "url": url,
-                "title": title,
-                "filename": filename,
-                "bytes": file_bytes,
-                "mime": mime,
-            })
-        except Exception as exc:
-            status.empty()
-            st.error(
-                f"Conversion failed for item {index + 1}.",
-                icon=":material/error:",
-            )
-            st.session_state.item_state[url] = {
-                "status": STATUS_ERROR,
-                "title": st.session_state.item_state.get(url, {}).get("title", f"Item {index + 1}"),
-                "error": str(exc),
-            }
-
-    if st.session_state.results:
-        st.balloons()
+# Final queue render (with Remove buttons). Replaces the progress view if conversion ran.
+render_queue(queue_slot, format_type, quality, show_actions=True)
 
 if st.session_state.results:
     st.markdown('<h2 class="section-title">Downloads</h2>', unsafe_allow_html=True)
-    for i, item in enumerate(st.session_state.results):
+    for item in st.session_state.results:
         st.download_button(
             label=f"Download {item['filename']}",
-            data=item["bytes"],
+            data=Path(item["path"]).read_bytes(),
             file_name=item["filename"],
             mime=item["mime"],
-            key=f"saved_dl_{i}_{hash(item['url']) % 10_000}",
+            key=f"saved_dl_{digest(item['url'])}",
             icon=":material/download:",
             type="secondary",
             width="stretch",
@@ -1004,10 +458,10 @@ if st.session_state.results:
 
 if len(st.session_state.results) > 1:
     st.space("small")
-    zip_bytes = build_zip(st.session_state.results)
+    zip_path = ensure_zip()
     st.download_button(
         label=f"Download all as ZIP ({len(st.session_state.results)} files)",
-        data=zip_bytes,
+        data=zip_path.read_bytes(),
         file_name="streamtune_downloads.zip",
         mime="application/zip",
         icon=":material/folder_zip:",
@@ -1015,3 +469,18 @@ if len(st.session_state.results) > 1:
         width="stretch",
         key="zip_download",
     )
+else:
+    drop_zip_cache()
+
+st.space("small")
+with st.expander("Maintenance"):
+    st.caption(
+        f"yt-dlp version {YTDLP_VERSION}. Sites change often, so update it when downloads start failing."
+    )
+    if st.button("Update yt-dlp", key="update_ytdlp", icon=":material/system_update_alt:"):
+        with st.spinner("Updating yt-dlp…"):
+            ok, message = dl.update_ytdlp()
+        if ok:
+            st.success(f"{message} Restart StreamTune to load the new version.")
+        else:
+            st.error(f"Update failed: {message}")

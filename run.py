@@ -1,45 +1,56 @@
 import importlib.util
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-
-# (import module name, pip package name)
-REQUIRED_PACKAGES = [
-    ("streamlit", "streamlit"),
-    ("yt_dlp", "yt-dlp"),
-    ("static_ffmpeg", "static-ffmpeg"),
-]
+REQUIREMENTS = ROOT / "requirements.txt"
+MIN_PYTHON = (3, 10)
+REQUIRED_MODULES = ("streamlit", "yt_dlp", "static_ffmpeg")
 
 
-def is_package_installed(module_name: str) -> bool:
+def check_python() -> None:
+    if sys.version_info < MIN_PYTHON:
+        required = ".".join(map(str, MIN_PYTHON))
+        found = ".".join(map(str, sys.version_info[:3]))
+        sys.exit(f"StreamTune needs Python {required}+ (found {found}).")
+
+
+def is_module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
-def install_package(pip_name: str) -> None:
-    print(f"Installing missing dependency: {pip_name}...")
+def install_requirements() -> None:
+    """Install or upgrade everything in requirements.txt. pip skips packages that are already current."""
+    print("Checking dependencies...")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
-        print(f"Successfully installed {pip_name}.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error installing {pip_name}: {e}")
-        sys.exit(1)
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "-q",
+                "-r",
+                str(REQUIREMENTS),
+            ]
+        )
+    except subprocess.CalledProcessError as exc:
+        missing = [name for name in REQUIRED_MODULES if not is_module_available(name)]
+        if missing:
+            sys.exit(
+                f"Could not install dependencies (pip exit code {exc.returncode}). "
+                f"Missing: {', '.join(missing)}. Check your internet connection and try again."
+            )
+        print(f"Dependency update failed (pip exit code {exc.returncode}); starting with installed versions.")
+        return
+    print("All dependencies are up to date.")
 
 
 def main() -> None:
-    os.chdir(ROOT)
-    print("Checking dependencies...")
-    missing = [pip for mod, pip in REQUIRED_PACKAGES if not is_package_installed(mod)]
-
-    if missing:
-        print(f"First-time setup detected. Found {len(missing)} missing package(s).")
-        for pip_name in missing:
-            install_package(pip_name)
-        print("All dependencies checked and verified!")
-    else:
-        print("All dependencies are already satisfied.")
+    check_python()
+    install_requirements()
 
     print("Launching StreamTune...")
     try:

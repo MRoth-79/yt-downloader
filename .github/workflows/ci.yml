@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -18,13 +22,22 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements*.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Check formatting
+        run: ruff format --check .
 
       - name: Compile Python sources
-        run: python -m py_compile run.py src/main.py
+        run: python -m py_compile run.py src/main.py src/downloader.py
 
       - name: Verify imports
-        run: python -c "import streamlit; import yt_dlp"
+        run: python -c "import streamlit; import yt_dlp; import static_ffmpeg"
+
+      - name: Unit tests
+        run: python -m pytest

@@ -1,19 +1,59 @@
 # StreamTune
 
+[![CI](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml)
+
 Local Streamlit app to convert authorized media sources to MP3 or MP4.
+
+## Features
+
+- Queue several URLs. The title, duration, and thumbnail are read when you add a link, so bad links are rejected early.
+- Choose MP3 (128, 192, or 320 kbps) or MP4 (up to 4K, or best available).
+- Items convert two at a time. Each item shows its own progress bar and final status.
+- Failed items can be retried. Completed items are not converted again unless you change the format or quality.
+- Download each file, or all files as one ZIP.
+- Update yt-dlp from the Maintenance panel when sites change and downloads start failing.
+
+## Requirements
+
+- Windows, macOS, or Linux
+- Python 3.10 or newer
+- Internet access on first run (FFmpeg is downloaded automatically when it is not installed)
 
 ## Run
 
+Windows: double-click `StreamTune.bat`. On first run it creates a `.venv` folder in the project and installs the dependencies there.
+
+Or from a terminal:
+
 ```powershell
 cd C:\Users\jz2kbh\git\yt-downloader
-pip install -r requirements.txt
 python run.py
 ```
 
-Or double-click `StreamTune.bat`.
+`run.py` installs or updates everything in `requirements.txt` and then starts the app.
 
-After code updates: hard refresh the browser (`Ctrl+F5`) or restart `python run.py`.
+After code updates: hard refresh the browser (`Ctrl+F5`) or restart the app.
 
-## Optional
+## Optional: sign-in cookies
 
-Place `cookies.txt` in the project root for videos that require sign-in.
+Place `cookies.txt` (exported from your browser in Netscape format) in the project root for videos that require sign-in. The file is ignored by Git. Never commit it.
+
+## Development
+
+```powershell
+pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+python -m pytest
+```
+
+## Project layout
+
+| Path | Purpose |
+| --- | --- |
+| `run.py` | Installs dependencies and launches the app |
+| `src/main.py` | Streamlit UI (queue, conversion, downloads) |
+| `src/downloader.py` | Download, conversion, file, and error helpers (no Streamlit dependency) |
+| `src/styles.css` | Layout styles injected into the app |
+| `.streamlit/config.toml` | Theme (colors, fonts, radii) |
+| `tests/` | Unit tests for the helpers |
