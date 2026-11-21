@@ -25,6 +25,7 @@ from yt_dlp.utils import sanitize_filename
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COOKIES_FILE = PROJECT_ROOT / "cookies.txt"
 WORK_DIR = Path(tempfile.gettempdir()) / "streamtune"
+SAVE_ROOT = Path.home() / "Downloads" / "StreamTune"
 
 FORMAT_MP3 = "MP3"
 FORMAT_MP4 = "MP4"
@@ -49,6 +50,7 @@ MAX_STEM_LENGTH = 120
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _ERROR_PREFIX_RE = re.compile(r"^ERROR:\s*")
+_INVALID_FOLDER_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -317,6 +319,47 @@ def build_zip(entries: list[tuple[str, Path]]) -> Path:
         for arcname, (_, path) in zip(arcnames, entries, strict=True):
             archive.write(path, arcname=arcname)
     return Path(name)
+
+
+def clean_folder_name(raw: str | None) -> str:
+    """Return a safe single folder name or raise ``ValueError`` with a user-facing message."""
+    name = _INVALID_FOLDER_CHARS_RE.sub("_", (raw or "").strip())
+    name = name[:MAX_STEM_LENGTH].rstrip(" .")
+    if not name:
+        raise ValueError("Enter a folder name first.")
+    if name.split(".")[0].upper() in _RESERVED_NAMES:
+        name = f"_{name}"
+    return name
+
+
+def _free_name(directory: Path, name: str) -> str:
+    """Return ``name`` or ``name_1``, ``name_2`` ... so nothing already in ``directory`` is overwritten."""
+    stem, ext = os.path.splitext(name)
+    candidate = name
+    counter = 1
+    while (directory / candidate).exists():
+        candidate = f"{stem}_{counter}{ext}"
+        counter += 1
+    return candidate
+
+
+def save_to_folder(
+    entries: list[tuple[str, Path]],
+    folder_name: str | None,
+    root: Path | None = None,
+) -> Path:
+    """Copy the given (file name, file path) pairs into ``root/folder_name`` and return that folder.
+
+    The folder is created if needed. Existing files are never overwritten.
+    """
+    if not entries:
+        raise ValueError("There are no finished downloads to save yet.")
+    target = (root or SAVE_ROOT) / clean_folder_name(folder_name)
+    target.mkdir(parents=True, exist_ok=True)
+    names = unique_names([name for name, _ in entries])
+    for name, (_, source) in zip(names, entries, strict=True):
+        shutil.copy2(source, target / _free_name(target, name))
+    return target
 
 
 def discard_workdir(path: str | Path) -> None:

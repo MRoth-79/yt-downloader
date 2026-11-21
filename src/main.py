@@ -41,6 +41,8 @@ def init_session_state():
         "item_state": {},
         "results": [],
         "draft_url_input": "",
+        "save_folder_name": "",
+        "last_saved_dir": "",
         "zip_cache": None,
     }
     for key, value in defaults.items():
@@ -122,6 +124,23 @@ def needs_conversion(url: str, fmt: str, quality: str) -> bool:
     if state.get("status") != STATUS_COMPLETED:
         return True
     return tuple(state.get("options") or ()) != (fmt, quality)
+
+
+def save_results_to_folder():
+    results = st.session_state.results
+    try:
+        target = dl.save_to_folder(
+            [(item["filename"], Path(item["path"])) for item in results],
+            st.session_state.save_folder_name,
+        )
+    except ValueError as exc:
+        st.toast(str(exc), icon=":material/error:")
+        return
+    except OSError as exc:
+        st.toast(f"Could not save the files: {exc}", icon=":material/error:")
+        return
+    st.session_state.last_saved_dir = str(target)
+    st.toast(f"Saved {len(results)} file(s) to the folder.", icon=":material/check_circle:")
 
 
 def ensure_zip() -> Path:
@@ -444,6 +463,23 @@ render_queue(queue_slot, format_type, quality, show_actions=True)
 
 if st.session_state.results:
     st.markdown('<h2 class="section-title">Downloads</h2>', unsafe_allow_html=True)
+    with st.container(border=True, key="save_card"):
+        st.text_input(
+            "Save to folder",
+            key="save_folder_name",
+            placeholder="e.g. Road trip mix",
+            help=f"Creates this folder in {dl.SAVE_ROOT} and saves every finished file into it.",
+        )
+        st.button(
+            "Save all to folder",
+            type="secondary",
+            width="stretch",
+            on_click=save_results_to_folder,
+            icon=":material/create_new_folder:",
+            key="save_to_folder",
+        )
+        if st.session_state.last_saved_dir:
+            st.caption(f"Saved to {st.session_state.last_saved_dir}")
     for item in st.session_state.results:
         st.download_button(
             label=f"Download {item['filename']}",

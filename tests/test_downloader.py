@@ -82,6 +82,57 @@ def test_build_zip_contains_all_files(tmp_path, monkeypatch):
         assert archive.read("song_1.mp3") == b"second"
 
 
+def test_clean_folder_name_replaces_separators_and_illegal_characters():
+    assert dl.clean_folder_name("My <mix>: 1/2") == "My _mix__ 1_2"
+    assert dl.clean_folder_name("..\\..\\evil") == ".._.._evil"
+
+
+def test_clean_folder_name_rejects_empty_names():
+    with pytest.raises(ValueError):
+        dl.clean_folder_name("   ")
+    with pytest.raises(ValueError):
+        dl.clean_folder_name("...")
+
+
+def test_clean_folder_name_prefixes_reserved_names():
+    assert dl.clean_folder_name("CON") == "_CON"
+
+
+def test_save_to_folder_copies_files_into_named_folder(tmp_path):
+    first = tmp_path / "one.mp3"
+    second = tmp_path / "two.mp3"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    root = tmp_path / "saved"
+
+    target = dl.save_to_folder([("song.mp3", first), ("song.mp3", second)], "Road trip", root=root)
+
+    assert target == root / "Road trip"
+    assert sorted(p.name for p in target.iterdir()) == ["song.mp3", "song_1.mp3"]
+    assert (target / "song.mp3").read_bytes() == b"first"
+    assert (target / "song_1.mp3").read_bytes() == b"second"
+
+
+def test_save_to_folder_never_overwrites_existing_files(tmp_path):
+    source = tmp_path / "one.mp3"
+    source.write_bytes(b"new")
+    root = tmp_path / "saved"
+    dl.save_to_folder([("song.mp3", source)], "mix", root=root)
+
+    dl.save_to_folder([("song.mp3", source)], "mix", root=root)
+
+    assert sorted(p.name for p in (root / "mix").iterdir()) == ["song.mp3", "song_1.mp3"]
+
+
+def test_save_to_folder_requires_entries_and_name(tmp_path):
+    source = tmp_path / "one.mp3"
+    source.write_bytes(b"x")
+    with pytest.raises(ValueError):
+        dl.save_to_folder([], "mix", root=tmp_path)
+    with pytest.raises(ValueError):
+        dl.save_to_folder([("song.mp3", source)], "  ", root=tmp_path)
+
+
 # ----------------------------------------------------------------------
 # format selection and labels
 # ----------------------------------------------------------------------
