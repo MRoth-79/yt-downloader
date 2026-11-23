@@ -11,7 +11,10 @@ Local Streamlit app to convert authorized media sources to MP3 or MP4.
 - Items convert two at a time. Each item shows its own progress bar and final status.
 - Failed items can be retried. Completed items are not converted again unless you change the format or quality.
 - Download each file, or all files as one ZIP.
-- Update yt-dlp from the Maintenance panel when sites change and downloads start failing.
+- Save all finished files into a folder you name. Folders are created in `Downloads\StreamTune` (existing files are never overwritten).
+- Update yt-dlp from the Maintenance panel when sites change and downloads start failing. The update runs in the background and shows its result when it finishes.
+- The queue and finished downloads are kept after a page refresh or an app restart. Leftover download folders older than 24 hours are deleted automatically.
+- Playlist links are not supported yet. A video link that also points into a playlist downloads only that video.
 
 ## Requirements
 

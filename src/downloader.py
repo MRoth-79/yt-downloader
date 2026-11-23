@@ -6,17 +6,19 @@ without starting a web server.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import static_ffmpeg
 import yt_dlp
@@ -25,9 +27,18 @@ from yt_dlp.utils import sanitize_filename
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COOKIES_FILE = PROJECT_ROOT / "cookies.txt"
 WORK_DIR = Path(tempfile.gettempdir()) / "streamtune"
+STATE_FILE = WORK_DIR / "session.json"
+YTDLP_LOG_FILE = WORK_DIR / "ytdlp_update.log"
+SAVE_ROOT = Path.home() / "Downloads" / "StreamTune"
+JOB_MAX_AGE_HOURS = 24
 
 FORMAT_MP3 = "MP3"
 FORMAT_MP4 = "MP4"
+
+STATUS_PENDING = "pending"
+STATUS_PROCESSING = "processing"
+STATUS_COMPLETED = "completed"
+STATUS_ERROR = "error"
 
 # Option tables: value -> label. The first entry of each table is the default.
 MP3_BITRATES: dict[str, str] = {
@@ -49,6 +60,7 @@ MAX_STEM_LENGTH = 120
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _ERROR_PREFIX_RE = re.compile(r"^ERROR:\s*")
+_INVALID_FOLDER_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -110,12 +122,22 @@ def validate_url(raw: str | None) -> str:
     return url
 
 
+def playlist_notice(url: str) -> str:
+    """Explain what happens to a video link that also points into a playlist. Empty if nothing to say."""
+    query = parse_qs(urlparse(url).query)
+    if "list" in query and "v" in query:
+        return "Only the video in this link will be downloaded. The playlist is ignored."
+    return ""
+
+
 def fetch_info(url: str) -> dict:
     """Read title and preview metadata without downloading anything."""
     with yt_dlp.YoutubeDL(_base_options()) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info:
         raise ValueError("No media information was returned for this link.")
+    if info.get("_type") in ("playlist", "multi_video"):
+        raise ValueError("Playlist links are not supported yet. Paste a link to a single video.")
     return {
         "title": info.get("title") or "",
         "thumbnail": info.get("thumbnail") or "",
@@ -136,6 +158,14 @@ def format_duration(seconds: float | int | None) -> str:
 def quality_label(fmt: str, quality: str) -> str:
     table = MP3_BITRATES if fmt == FORMAT_MP3 else MP4_HEIGHTS
     return table.get(quality, quality)
+
+
+def needs_conversion(state: dict | None, fmt: str, quality: str) -> bool:
+    """True unless the item already finished with exactly these output settings."""
+    state = state or {}
+    if state.get("status") != STATUS_COMPLETED:
+        return True
+    return tuple(state.get("options") or ()) != (fmt, quality)
 
 
 # ----------------------------------------------------------------------
@@ -319,6 +349,56 @@ def build_zip(entries: list[tuple[str, Path]]) -> Path:
     return Path(name)
 
 
+def zip_bytes(entries: list[tuple[str, Path]]) -> bytes:
+    """Build the ZIP in a temporary file, read it into memory, and delete the temporary file."""
+    path = build_zip(entries)
+    try:
+        return path.read_bytes()
+    finally:
+        remove_file(path)
+
+
+def clean_folder_name(raw: str | None) -> str:
+    """Return a safe single folder name or raise ``ValueError`` with a user-facing message."""
+    name = _INVALID_FOLDER_CHARS_RE.sub("_", (raw or "").strip())
+    name = name[:MAX_STEM_LENGTH].rstrip(" .")
+    if not name:
+        raise ValueError("Enter a folder name first.")
+    if name.split(".")[0].upper() in _RESERVED_NAMES:
+        name = f"_{name}"
+    return name
+
+
+def _free_name(directory: Path, name: str) -> str:
+    """Return ``name`` or ``name_1``, ``name_2`` ... so nothing already in ``directory`` is overwritten."""
+    stem, ext = os.path.splitext(name)
+    candidate = name
+    counter = 1
+    while (directory / candidate).exists():
+        candidate = f"{stem}_{counter}{ext}"
+        counter += 1
+    return candidate
+
+
+def save_to_folder(
+    entries: list[tuple[str, Path]],
+    folder_name: str | None,
+    root: Path | None = None,
+) -> Path:
+    """Copy the given (file name, file path) pairs into ``root/folder_name`` and return that folder.
+
+    The folder is created if needed. Existing files are never overwritten.
+    """
+    if not entries:
+        raise ValueError("There are no finished downloads to save yet.")
+    target = (root or SAVE_ROOT) / clean_folder_name(folder_name)
+    target.mkdir(parents=True, exist_ok=True)
+    names = unique_names([name for name, _ in entries])
+    for name, (_, source) in zip(names, entries, strict=True):
+        shutil.copy2(source, target / _free_name(target, name))
+    return target
+
+
 def discard_workdir(path: str | Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
@@ -326,6 +406,44 @@ def discard_workdir(path: str | Path) -> None:
 def remove_file(path: str | Path) -> None:
     try:
         Path(path).unlink()
+    except OSError:
+        pass
+
+
+def cleanup_old_jobs(max_age_hours: float = JOB_MAX_AGE_HOURS) -> int:
+    """Delete ``job_*`` folders in WORK_DIR older than ``max_age_hours``. Returns how many were removed."""
+    if not WORK_DIR.is_dir():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for path in WORK_DIR.glob("job_*"):
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+# ----------------------------------------------------------------------
+# Saved session (queue and finished downloads survive a refresh or restart)
+# ----------------------------------------------------------------------
+def load_state() -> dict:
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_state(data: dict) -> None:
+    """Write the session state atomically. Failing to save is not fatal, so errors are ignored."""
+    try:
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        temp = STATE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, STATE_FILE)
     except OSError:
         pass
 
@@ -344,14 +462,26 @@ def explain_error(exc: BaseException) -> tuple[str, str]:
     return "Conversion failed.", detail
 
 
-def update_ytdlp() -> tuple[bool, str]:
-    """Upgrade yt-dlp with pip. The running process keeps the old version until restarted."""
-    completed = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    lines = [line for line in (completed.stdout + completed.stderr).splitlines() if line.strip()]
-    last = lines[-1] if lines else "No output from pip."
-    return completed.returncode == 0, last
+def start_ytdlp_update() -> tuple[subprocess.Popen, Path]:
+    """Start upgrading yt-dlp with pip in the background. Output goes to a log file.
+
+    The running process keeps the old version until StreamTune is restarted.
+    """
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    with open(YTDLP_LOG_FILE, "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    return proc, YTDLP_LOG_FILE
+
+
+def ytdlp_update_message(log_path: Path) -> str:
+    """Return the last non-empty line of the pip log, which is the summary."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "No output from pip."
+    lines = [line for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else "No output from pip."
