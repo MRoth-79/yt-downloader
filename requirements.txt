@@ -1,4 +1,6 @@
 # Tested with streamlit 1.66 (the app uses st.space, horizontal containers, and width="stretch").
 streamlit>=1.66,<2
-yt-dlp>=2025.01.01
+# Tested with yt-dlp 2026.10.26. Capped below the next yearly series so upgrades stay deliberate.
+# Keep YTDLP_REQUIREMENT in src/downloader.py in sync (the in-app updater uses it).
+yt-dlp>=2026.10.26,<2027
 static-ffmpeg>=3.0

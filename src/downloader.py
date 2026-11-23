@@ -31,6 +31,9 @@ STATE_FILE = WORK_DIR / "session.json"
 YTDLP_LOG_FILE = WORK_DIR / "ytdlp_update.log"
 SAVE_ROOT = Path.home() / "Downloads" / "StreamTune"
 JOB_MAX_AGE_HOURS = 24
+# Must match the yt-dlp line in requirements.txt (a unit test checks this).
+YTDLP_REQUIREMENT = "yt-dlp>=2026.10.26,<2027"
+MAX_PLAYLIST_ITEMS = 200
 
 FORMAT_MP3 = "MP3"
 FORMAT_MP4 = "MP4"
@@ -126,23 +129,72 @@ def playlist_notice(url: str) -> str:
     """Explain what happens to a video link that also points into a playlist. Empty if nothing to say."""
     query = parse_qs(urlparse(url).query)
     if "list" in query and "v" in query:
-        return "Only the video in this link will be downloaded. The playlist is ignored."
+        return "Only the video in this link was added. To add the whole playlist, paste the playlist link."
     return ""
 
 
 def fetch_info(url: str) -> dict:
-    """Read title and preview metadata without downloading anything."""
-    with yt_dlp.YoutubeDL(_base_options()) as ydl:
+    """Read title and preview metadata without downloading anything.
+
+    A single video returns ``{title, thumbnail, duration, uploader}``. A playlist returns
+    ``{"type": "playlist", "title", "total", "entries": [{url, title, thumbnail, duration,
+    uploader}, ...]}``. Playlist entries are read flat (no request per video), and at most
+    ``MAX_PLAYLIST_ITEMS`` are returned; ``total`` is the full playlist size when known.
+    """
+    options = _base_options()
+    options.update({"extract_flat": "in_playlist", "playlistend": MAX_PLAYLIST_ITEMS})
+    with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info:
         raise ValueError("No media information was returned for this link.")
     if info.get("_type") in ("playlist", "multi_video"):
-        raise ValueError("Playlist links are not supported yet. Paste a link to a single video.")
+        return _playlist_info(info)
+    return _media_info(info)
+
+
+def _thumbnail(info: dict) -> str:
+    """Return ``thumbnail``, else the last (preferred) entry of ``thumbnails``, as flat entries have."""
+    if info.get("thumbnail"):
+        return info["thumbnail"]
+    for thumb in reversed(info.get("thumbnails") or []):
+        if isinstance(thumb, dict) and thumb.get("url"):
+            return thumb["url"]
+    return ""
+
+
+def _media_info(info: dict) -> dict:
     return {
         "title": info.get("title") or "",
-        "thumbnail": info.get("thumbnail") or "",
+        "thumbnail": _thumbnail(info),
         "duration": info.get("duration") or 0,
         "uploader": info.get("uploader") or info.get("channel") or "",
+    }
+
+
+def _entry_url(entry: dict) -> str:
+    for key in ("url", "webpage_url"):
+        try:
+            return validate_url(entry.get(key))
+        except ValueError:
+            continue
+    return ""
+
+
+def _playlist_info(info: dict) -> dict:
+    entries = []
+    for entry in info.get("entries") or []:
+        if not isinstance(entry, dict) or entry.get("_type") in ("playlist", "multi_video"):
+            continue
+        url = _entry_url(entry)
+        if url:
+            entries.append({"url": url, **_media_info(entry)})
+    if not entries:
+        raise ValueError("No videos that can be added were found in this playlist.")
+    return {
+        "type": "playlist",
+        "title": info.get("title") or "",
+        "total": max(info.get("playlist_count") or 0, len(entries)),
+        "entries": entries,
     }
 
 
@@ -465,12 +517,17 @@ def explain_error(exc: BaseException) -> tuple[str, str]:
 def start_ytdlp_update() -> tuple[subprocess.Popen, Path]:
     """Start upgrading yt-dlp with pip in the background. Output goes to a log file.
 
-    The running process keeps the old version until StreamTune is restarted.
+    This installs into the Python environment that runs StreamTune (``sys.executable``,
+    normally the project's ``.venv``), so it changes that environment for every later run.
+    The upgrade stays within ``YTDLP_REQUIREMENT``, the same bounds as requirements.txt.
+
+    The running process keeps the old version loaded. StreamTune must be restarted to use
+    the new version.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     with open(YTDLP_LOG_FILE, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", YTDLP_REQUIREMENT],
             stdout=log,
             stderr=subprocess.STDOUT,
         )

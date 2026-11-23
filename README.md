@@ -1,5 +1,7 @@
 # StreamTune
 
+This repository is named `yt-downloader`, but the app it contains is called StreamTune.
+
 [![CI](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml)
 
 Local Streamlit app to convert authorized media sources to MP3 or MP4.
@@ -12,9 +14,9 @@ Local Streamlit app to convert authorized media sources to MP3 or MP4.
 - Failed items can be retried. Completed items are not converted again unless you change the format or quality.
 - Download each file, or all files as one ZIP.
 - Save all finished files into a folder you name. Folders are created in `Downloads\StreamTune` (existing files are never overwritten).
-- Update yt-dlp from the Maintenance panel when sites change and downloads start failing. The update runs in the background and shows its result when it finishes.
+- Update yt-dlp from the Maintenance panel when sites change and downloads start failing. The update runs in the background and shows its result when it finishes. It installs into the Python environment StreamTune runs in (usually `.venv`), stays within the version range in `requirements.txt`, and takes effect after you restart StreamTune.
 - The queue and finished downloads are kept after a page refresh or an app restart. Leftover download folders older than 24 hours are deleted automatically.
-- Playlist links are not supported yet. A video link that also points into a playlist downloads only that video.
+- Paste a playlist link to queue each of its videos (up to 200 per link). Each video gets its own progress bar and can be retried on its own. Videos already in the queue are skipped. A video link that also points into a playlist adds only that video.
 
 ## Requirements
 
@@ -29,7 +31,7 @@ Windows: double-click `StreamTune.bat`. On first run it creates a `.venv` folder
 Or from a terminal:
 
 ```powershell
-cd C:\Users\jz2kbh\git\yt-downloader
+cd yt-downloader
 python run.py
 ```
 
@@ -50,13 +52,25 @@ ruff format --check .
 python -m pytest
 ```
 
+To see test coverage per file in `src/` (including the lines that are not covered):
+
+```powershell
+python -m pytest --cov=src --cov-report=term-missing
+```
+
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
 | `run.py` | Installs dependencies and launches the app |
-| `src/main.py` | Streamlit UI (queue, conversion, downloads) |
+| `src/main.py` | Streamlit app wiring and conversion run logic |
+| `src/state.py` | Session defaults, restore after refresh or restart, and saving (no Streamlit dependency) |
+| `src/ui.py` | Queue card HTML helpers and the queue view |
 | `src/downloader.py` | Download, conversion, file, and error helpers (no Streamlit dependency) |
 | `src/styles.css` | Layout styles injected into the app |
 | `.streamlit/config.toml` | Theme (colors, fonts, radii) |
 | `tests/` | Unit tests for the helpers |
+
+## License
+
+StreamTune is released under the MIT License. See [LICENSE](LICENSE).
