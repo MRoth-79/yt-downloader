@@ -1,3 +1,6 @@
+import io
+import os
+import time
 import zipfile
 
 import pytest
@@ -184,3 +187,102 @@ def test_explain_error_strips_ansi_and_prefix():
 def test_explain_error_maps_common_failures(text, expected_fragment):
     message, _ = dl.explain_error(RuntimeError(text))
     assert expected_fragment in message.lower()
+
+
+# ----------------------------------------------------------------------
+# needs_conversion, zip_bytes, playlist handling
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "state, expected",
+    [
+        (None, True),
+        ({}, True),
+        ({"status": dl.STATUS_PENDING}, True),
+        ({"status": dl.STATUS_ERROR, "options": ["MP3", "192"]}, True),
+        ({"status": dl.STATUS_COMPLETED, "options": ["MP3", "192"]}, False),
+        ({"status": dl.STATUS_COMPLETED, "options": ["MP3", "320"]}, True),
+    ],
+)
+def test_needs_conversion(state, expected):
+    assert dl.needs_conversion(state, dl.FORMAT_MP3, "192") is expected
+
+
+def test_zip_bytes_returns_archive_and_removes_temp_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "WORK_DIR", tmp_path / "work")
+    source = tmp_path / "one.mp3"
+    source.write_bytes(b"data")
+
+    payload = dl.zip_bytes([("song.mp3", source)])
+
+    assert zipfile.ZipFile(io.BytesIO(payload)).read("song.mp3") == b"data"
+    assert list((tmp_path / "work").glob("streamtune_*.zip")) == []
+
+
+def test_playlist_notice_only_for_video_inside_playlist():
+    assert "playlist is ignored" in dl.playlist_notice("https://example.com/watch?v=1&list=abc")
+    assert dl.playlist_notice("https://example.com/watch?v=1") == ""
+    assert dl.playlist_notice("https://example.com/playlist?list=abc") == ""
+
+
+def test_fetch_info_rejects_playlists(monkeypatch):
+    class FakeYDL:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            return {"_type": "playlist", "title": "A list", "entries": []}
+
+    monkeypatch.setattr(dl.yt_dlp, "YoutubeDL", FakeYDL)
+    with pytest.raises(ValueError, match="Playlist"):
+        dl.fetch_info("https://example.com/playlist?list=abc")
+
+
+# ----------------------------------------------------------------------
+# temp cleanup, saved session, yt-dlp update log
+# ----------------------------------------------------------------------
+def test_cleanup_old_jobs_removes_only_old_job_folders(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    monkeypatch.setattr(dl, "WORK_DIR", work)
+    old = work / "job_old"
+    fresh = work / "job_fresh"
+    other = work / "keep_me"
+    for folder in (old, fresh, other):
+        folder.mkdir(parents=True)
+    three_days_ago = time.time() - 3 * 24 * 3600
+    os.utime(old, (three_days_ago, three_days_ago))
+    os.utime(other, (three_days_ago, three_days_ago))
+
+    assert dl.cleanup_old_jobs(24) == 1
+    assert not old.exists()
+    assert fresh.exists()
+    assert other.exists()
+
+
+def test_cleanup_old_jobs_handles_missing_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "WORK_DIR", tmp_path / "missing")
+    assert dl.cleanup_old_jobs(24) == 0
+
+
+def test_state_round_trip_and_bad_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "WORK_DIR", tmp_path)
+    monkeypatch.setattr(dl, "STATE_FILE", tmp_path / "session.json")
+
+    assert dl.load_state() == {}
+    dl.save_state({"queue": ["https://example.com/a"], "item_state": {}})
+    assert dl.load_state() == {"queue": ["https://example.com/a"], "item_state": {}}
+
+    (tmp_path / "session.json").write_text("not json", encoding="utf-8")
+    assert dl.load_state() == {}
+
+
+def test_ytdlp_update_message_uses_last_line(tmp_path):
+    log = tmp_path / "log.txt"
+    log.write_text("Collecting yt-dlp\n\nSuccessfully installed yt-dlp-2026.1\n", encoding="utf-8")
+    assert dl.ytdlp_update_message(log) == "Successfully installed yt-dlp-2026.1"
+    assert dl.ytdlp_update_message(tmp_path / "missing.txt") == "No output from pip."

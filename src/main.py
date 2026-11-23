@@ -8,14 +8,14 @@ from yt_dlp.version import __version__ as YTDLP_VERSION
 
 import downloader as dl
 
-APP_UI_VERSION = "4.2"
+APP_UI_VERSION = "4.2.0"
 MAX_PARALLEL = 2
 STYLE_FILE = Path(__file__).resolve().with_name("styles.css")
 
-STATUS_PENDING = "pending"
-STATUS_PROCESSING = "processing"
-STATUS_COMPLETED = "completed"
-STATUS_ERROR = "error"
+STATUS_PENDING = dl.STATUS_PENDING
+STATUS_PROCESSING = dl.STATUS_PROCESSING
+STATUS_COMPLETED = dl.STATUS_COMPLETED
+STATUS_ERROR = dl.STATUS_ERROR
 
 st.set_page_config(
     page_title="StreamTune",
@@ -30,9 +30,43 @@ def get_ffmpeg_dir():
     return dl.ensure_ffmpeg()
 
 
+@st.cache_resource
+def remove_old_jobs() -> int:
+    """Delete download folders left over from earlier runs. Runs once per server process."""
+    return dl.cleanup_old_jobs(dl.JOB_MAX_AGE_HOURS)
+
+
 def inject_styles():
     css = STYLE_FILE.read_text(encoding="utf-8")
     st.html(f"<style>{css}</style>")
+
+
+def restore_session():
+    """Load the queue and finished downloads saved by an earlier run (after a refresh or restart)."""
+    data = dl.load_state()
+    saved_states = data.get("item_state") if isinstance(data.get("item_state"), dict) else {}
+    queue: list[str] = []
+    item_state: dict = {}
+    for url in data.get("queue") or []:
+        if not isinstance(url, str) or url in queue:
+            continue
+        state = saved_states.get(url)
+        if not isinstance(state, dict):
+            continue
+        if state.get("status") == STATUS_PROCESSING:
+            state = {**state, "status": STATUS_PENDING}
+        queue.append(url)
+        item_state[url] = state
+    results = [
+        item
+        for item in data.get("results") or []
+        if isinstance(item, dict) and Path(str(item.get("path", ""))).is_file()
+    ]
+    saved_items = data.get("saved_items") if isinstance(data.get("saved_items"), dict) else {}
+    st.session_state.queue = queue
+    st.session_state.item_state = item_state
+    st.session_state.results = results
+    st.session_state.saved_items = saved_items
 
 
 def init_session_state():
@@ -41,13 +75,30 @@ def init_session_state():
         "item_state": {},
         "results": [],
         "draft_url_input": "",
+        "clear_draft": False,
         "save_folder_name": "",
+        "saved_items": {},
         "last_saved_dir": "",
-        "zip_cache": None,
+        "ytdlp_job": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if not st.session_state.get("restored"):
+        restore_session()
+        st.session_state.restored = True
+
+
+def persist_session():
+    """Save the queue and finished downloads so a refresh or restart does not lose them."""
+    dl.save_state(
+        {
+            "queue": st.session_state.queue,
+            "item_state": st.session_state.item_state,
+            "results": st.session_state.results,
+            "saved_items": st.session_state.saved_items,
+        }
+    )
 
 
 def digest(url: str) -> str:
@@ -64,22 +115,33 @@ def format_choice(fmt: str) -> str:
 # ----------------------------------------------------------------------
 # Queue and result state
 # ----------------------------------------------------------------------
-def add_to_queue():
+def add_url(raw: str):
+    """Check a link, read its details, and add it to the queue.
+
+    Runs inside the script (not a callback) so a spinner can show while the link is read.
+    """
     try:
-        url = dl.validate_url(st.session_state.draft_url_input)
+        url = dl.validate_url(raw)
     except ValueError as exc:
         st.toast(str(exc), icon=":material/error:")
         return
     if url in st.session_state.queue:
         st.toast("That link is already in the queue.", icon=":material/info:")
         return
-    try:
-        info = dl.fetch_info(url)
-    except Exception as exc:
-        message, _ = dl.explain_error(exc)
-        st.toast(f"Could not read this link. {message}", icon=":material/error:")
-        return
+    with st.spinner("Reading link…"):
+        try:
+            info = dl.fetch_info(url)
+        except ValueError as exc:
+            st.toast(str(exc), icon=":material/error:")
+            return
+        except Exception as exc:
+            message, _ = dl.explain_error(exc)
+            st.toast(f"Could not read this link. {message}", icon=":material/error:")
+            return
 
+    notice = dl.playlist_notice(url)
+    if notice:
+        st.toast(notice, icon=":material/info:")
     st.session_state.queue.append(url)
     st.session_state.item_state[url] = {
         "status": STATUS_PENDING,
@@ -91,7 +153,10 @@ def add_to_queue():
         "detail": "",
         "options": None,
     }
-    st.session_state.draft_url_input = ""
+    # The text box can only be cleared before it is drawn, so clear it on the next run.
+    st.session_state.clear_draft = True
+    persist_session()
+    st.rerun()
 
 
 def discard_result(url: str):
@@ -104,55 +169,78 @@ def discard_result(url: str):
     st.session_state.results = kept
 
 
-def drop_zip_cache():
-    cache = st.session_state.zip_cache
-    if cache:
-        dl.remove_file(cache["path"])
-    st.session_state.zip_cache = None
-
-
 def remove_from_queue(url: str):
     if url in st.session_state.queue:
         st.session_state.queue.remove(url)
     st.session_state.item_state.pop(url, None)
     discard_result(url)
-    drop_zip_cache()
-
-
-def needs_conversion(url: str, fmt: str, quality: str) -> bool:
-    state = st.session_state.item_state.get(url, {})
-    if state.get("status") != STATUS_COMPLETED:
-        return True
-    return tuple(state.get("options") or ()) != (fmt, quality)
 
 
 def save_results_to_folder():
-    results = st.session_state.results
     try:
-        target = dl.save_to_folder(
-            [(item["filename"], Path(item["path"])) for item in results],
-            st.session_state.save_folder_name,
-        )
+        key = dl.clean_folder_name(st.session_state.save_folder_name)
     except ValueError as exc:
         st.toast(str(exc), icon=":material/error:")
         return
-    except OSError as exc:
+    already_saved = set(st.session_state.saved_items.get(key, []))
+    new_items = [item for item in st.session_state.results if item["path"] not in already_saved]
+    if not new_items:
+        st.toast("Every finished file is already in this folder.", icon=":material/info:")
+        return
+    try:
+        target = dl.save_to_folder(
+            [(item["filename"], Path(item["path"])) for item in new_items],
+            key,
+        )
+    except (ValueError, OSError) as exc:
         st.toast(f"Could not save the files: {exc}", icon=":material/error:")
         return
+    st.session_state.saved_items[key] = sorted(already_saved | {item["path"] for item in new_items})
     st.session_state.last_saved_dir = str(target)
-    st.toast(f"Saved {len(results)} file(s) to the folder.", icon=":material/check_circle:")
+    st.toast(f"Saved {len(new_items)} new file(s).", icon=":material/check_circle:")
 
 
-def ensure_zip() -> Path:
-    results = st.session_state.results
-    key = [item["path"] for item in results]
-    cache = st.session_state.zip_cache
-    if cache and cache["key"] == key and Path(cache["path"]).is_file():
-        return Path(cache["path"])
-    drop_zip_cache()
-    path = dl.build_zip([(item["filename"], Path(item["path"])) for item in results])
-    st.session_state.zip_cache = {"key": key, "path": str(path)}
-    return path
+# ----------------------------------------------------------------------
+# yt-dlp maintenance (runs in the background, shows progress)
+# ----------------------------------------------------------------------
+def start_ytdlp_update():
+    proc, log_path = dl.start_ytdlp_update()
+    st.session_state.ytdlp_job = {"proc": proc, "log": str(log_path), "shown": False}
+
+
+def ytdlp_running() -> bool:
+    job = st.session_state.ytdlp_job
+    return job is not None and job["proc"].poll() is None
+
+
+def update_panel():
+    job = st.session_state.ytdlp_job
+    running = ytdlp_running()
+    if job is not None and not running and not job["shown"]:
+        # The update just finished. Rerun the whole app once so polling stops and the result shows.
+        job["shown"] = True
+        st.rerun()
+    if running:
+        st.caption("Updating yt-dlp… this can take a minute.")
+    elif job is not None:
+        message = dl.ytdlp_update_message(Path(job["log"]))
+        if job["proc"].returncode == 0:
+            st.success(f"{message} Restart StreamTune to load the new version.")
+        else:
+            st.error(f"Update failed: {message}")
+    st.button(
+        "Update yt-dlp",
+        key="update_ytdlp",
+        icon=":material/system_update_alt:",
+        on_click=start_ytdlp_update,
+        disabled=running,
+    )
+
+
+def maintenance_panel():
+    # Only poll while an update is running. Polling stops when the fragment is drawn without run_every.
+    poll_every = 1 if ytdlp_running() else None
+    st.fragment(run_every=poll_every)(update_panel)()
 
 
 # ----------------------------------------------------------------------
@@ -298,7 +386,6 @@ def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
         )
         slot.success(f"Completed: {result.title}", icon=":material/check_circle:")
 
-    drop_zip_cache()
     return successes
 
 
@@ -306,6 +393,7 @@ def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
 # App
 # ----------------------------------------------------------------------
 inject_styles()
+remove_old_jobs()
 init_session_state()
 
 ffmpeg_ok = get_ffmpeg_dir() is not None
@@ -352,6 +440,9 @@ st.markdown(
 
 st.markdown('<h2 class="section-title">Add a source</h2>', unsafe_allow_html=True)
 with st.container(border=True, key="source_card"):
+    if st.session_state.clear_draft:
+        st.session_state.draft_url_input = ""
+        st.session_state.clear_draft = False
     st.markdown(
         """
         <p class="helper-text">
@@ -368,15 +459,15 @@ with st.container(border=True, key="source_card"):
         help="Only add sources you have permission to convert.",
     )
     st.caption("One authorized URL per queue item. The title and preview are read when you add it.")
-    st.button(
+    if st.button(
         "Add to queue",
         type="secondary",
         width="stretch",
-        on_click=add_to_queue,
         icon=":material/playlist_add:",
         key="add_to_queue",
         help="Checks the URL and adds it to the conversion queue",
-    )
+    ):
+        add_url(st.session_state.draft_url_input)
 
 st.space("small")
 with st.container(border=True, key="format_card"):
@@ -450,7 +541,11 @@ if st.button(
     key="start_conversion",
     help="Convert queued items that are not done yet. Failed items are retried.",
 ):
-    pending = [url for url in st.session_state.queue if needs_conversion(url, format_type, quality)]
+    pending = [
+        url
+        for url in st.session_state.queue
+        if dl.needs_conversion(st.session_state.item_state.get(url), format_type, quality)
+    ]
     if not pending:
         st.info("Everything in the queue is already converted with these settings.")
     else:
@@ -480,43 +575,41 @@ if st.session_state.results:
         )
         if st.session_state.last_saved_dir:
             st.caption(f"Saved to {st.session_state.last_saved_dir}")
+    # The data callable runs only when the user clicks, so files are not read on every rerun.
     for item in st.session_state.results:
+        path = Path(item["path"])
         st.download_button(
             label=f"Download {item['filename']}",
-            data=Path(item["path"]).read_bytes(),
+            data=lambda p=path: p.read_bytes(),
             file_name=item["filename"],
             mime=item["mime"],
             key=f"saved_dl_{digest(item['url'])}",
             icon=":material/download:",
             type="secondary",
             width="stretch",
+            on_click="ignore",
         )
 
 if len(st.session_state.results) > 1:
     st.space("small")
-    zip_path = ensure_zip()
+    entries = [(item["filename"], Path(item["path"])) for item in st.session_state.results]
     st.download_button(
-        label=f"Download all as ZIP ({len(st.session_state.results)} files)",
-        data=zip_path.read_bytes(),
+        label=f"Download all as ZIP ({len(entries)} files)",
+        data=lambda e=entries: dl.zip_bytes(e),
         file_name="streamtune_downloads.zip",
         mime="application/zip",
         icon=":material/folder_zip:",
         type="primary",
         width="stretch",
         key="zip_download",
+        on_click="ignore",
     )
-else:
-    drop_zip_cache()
 
 st.space("small")
 with st.expander("Maintenance"):
     st.caption(
         f"yt-dlp version {YTDLP_VERSION}. Sites change often, so update it when downloads start failing."
     )
-    if st.button("Update yt-dlp", key="update_ytdlp", icon=":material/system_update_alt:"):
-        with st.spinner("Updating yt-dlp…"):
-            ok, message = dl.update_ytdlp()
-        if ok:
-            st.success(f"{message} Restart StreamTune to load the new version.")
-        else:
-            st.error(f"Update failed: {message}")
+    maintenance_panel()
+
+persist_session()
