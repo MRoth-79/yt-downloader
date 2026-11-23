@@ -34,7 +34,7 @@ jobs:
         run: ruff format --check .
 
       - name: Compile Python sources
-        run: python -m py_compile run.py src/main.py src/downloader.py
+        run: python -m py_compile run.py src/main.py src/downloader.py src/state.py src/ui.py
 
       - name: Verify imports
         run: python -c "import streamlit; import yt_dlp; import static_ffmpeg"

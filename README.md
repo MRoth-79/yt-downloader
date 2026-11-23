@@ -63,7 +63,9 @@ python -m pytest --cov=src --cov-report=term-missing
 | Path | Purpose |
 | --- | --- |
 | `run.py` | Installs dependencies and launches the app |
-| `src/main.py` | Streamlit UI (queue, conversion, downloads) |
+| `src/main.py` | Streamlit app wiring and conversion run logic |
+| `src/state.py` | Session defaults, restore after refresh or restart, and saving (no Streamlit dependency) |
+| `src/ui.py` | Queue card HTML helpers and the queue view |
 | `src/downloader.py` | Download, conversion, file, and error helpers (no Streamlit dependency) |
 | `src/styles.css` | Layout styles injected into the app |
 | `.streamlit/config.toml` | Theme (colors, fonts, radii) |

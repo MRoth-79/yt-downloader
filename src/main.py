@@ -1,5 +1,3 @@
-import hashlib
-import html
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -7,6 +5,8 @@ import streamlit as st
 from yt_dlp.version import __version__ as YTDLP_VERSION
 
 import downloader as dl
+import state as app_state
+import ui
 
 APP_UI_VERSION = "4.2.0"
 MAX_PARALLEL = 2
@@ -41,69 +41,8 @@ def inject_styles():
     st.html(f"<style>{css}</style>")
 
 
-def restore_session():
-    """Load the queue and finished downloads saved by an earlier run (after a refresh or restart)."""
-    data = dl.load_state()
-    saved_states = data.get("item_state") if isinstance(data.get("item_state"), dict) else {}
-    queue: list[str] = []
-    item_state: dict = {}
-    for url in data.get("queue") or []:
-        if not isinstance(url, str) or url in queue:
-            continue
-        state = saved_states.get(url)
-        if not isinstance(state, dict):
-            continue
-        if state.get("status") == STATUS_PROCESSING:
-            state = {**state, "status": STATUS_PENDING}
-        queue.append(url)
-        item_state[url] = state
-    results = [
-        item
-        for item in data.get("results") or []
-        if isinstance(item, dict) and Path(str(item.get("path", ""))).is_file()
-    ]
-    saved_items = data.get("saved_items") if isinstance(data.get("saved_items"), dict) else {}
-    st.session_state.queue = queue
-    st.session_state.item_state = item_state
-    st.session_state.results = results
-    st.session_state.saved_items = saved_items
-
-
-def init_session_state():
-    defaults = {
-        "queue": [],
-        "item_state": {},
-        "results": [],
-        "draft_url_input": "",
-        "clear_draft": False,
-        "save_folder_name": "",
-        "saved_items": {},
-        "last_saved_dir": "",
-        "ytdlp_job": None,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-    if not st.session_state.get("restored"):
-        restore_session()
-        st.session_state.restored = True
-
-
 def persist_session():
-    """Save the queue and finished downloads so a refresh or restart does not lose them."""
-    dl.save_state(
-        {
-            "queue": st.session_state.queue,
-            "item_state": st.session_state.item_state,
-            "results": st.session_state.results,
-            "saved_items": st.session_state.saved_items,
-        }
-    )
-
-
-def digest(url: str) -> str:
-    """Short, stable key suffix for widgets tied to a URL."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    app_state.persist_session(st.session_state)
 
 
 def format_choice(fmt: str) -> str:
@@ -244,82 +183,17 @@ def maintenance_panel():
 
 
 # ----------------------------------------------------------------------
-# Rendering
+# Conversion
 # ----------------------------------------------------------------------
-def render_status_badge(status: str) -> str:
-    labels = {
-        STATUS_PENDING: ("Waiting", "pending"),
-        STATUS_PROCESSING: ("Processing", "processing"),
-        STATUS_COMPLETED: ("Completed", "completed"),
-        STATUS_ERROR: ("Error", "error"),
-    }
-    text, css = labels.get(status, ("Unknown", "pending"))
-    return f'<span class="status-badge {css}" aria-label="Status: {text}">{text}</span>'
-
-
-def queue_card_html(url: str, state: dict, fmt: str, quality: str) -> str:
-    status = state.get("status", STATUS_PENDING)
-    title = html.escape(state.get("title") or url)
-    thumbnail = state.get("thumbnail") or ""
-    thumb_html = (
-        f'<img class="queue-thumb" src="{html.escape(thumbnail)}" alt="" loading="lazy" '
-        'referrerpolicy="no-referrer">'
-        if thumbnail
-        else ""
-    )
-    opt_fmt, opt_quality = state.get("options") or (fmt, quality)
-    format_text = f"{opt_fmt} · {dl.quality_label(opt_fmt, opt_quality)}"
-    rows = [("Source", url), ("Format", format_text)]
-    duration = dl.format_duration(state.get("duration"))
-    if duration:
-        rows.append(("Length", duration))
-    meta = "".join(f"<div><dt>{label}</dt><dd>{html.escape(value)}</dd></div>" for label, value in rows)
-    return (
-        f'<article class="queue-card is-{status}">'
-        f'<div class="queue-row">{thumb_html}'
-        f'<div class="queue-main">'
-        f'<div class="queue-head"><h3 class="queue-card-title">{title}</h3>'
-        f"{render_status_badge(status)}</div>"
-        f'<dl class="queue-meta">{meta}</dl>'
-        "</div></div></article>"
-    )
-
-
 def render_queue(slot, fmt: str, quality: str, show_actions: bool):
-    """Draw the queue into ``slot`` (an ``st.empty`` placeholder).
-
-    Remove buttons are only drawn in the final render of a run, so that widget keys are unique.
-    """
-    queue = st.session_state.queue
-    with slot.container(border=True):
-        if not queue:
-            st.markdown(
-                """
-                <div class="empty-queue" role="status">
-                    <div class="empty-mark" aria-hidden="true"></div>
-                    <p class="empty-title">Nothing queued yet</p>
-                    <p class="empty-copy">Paste a media URL above, then choose Add to queue.</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            return
-
-        for url in queue:
-            state = st.session_state.item_state.get(url, {})
-            st.markdown(queue_card_html(url, state, fmt, quality), unsafe_allow_html=True)
-            if state.get("status") == STATUS_ERROR and state.get("detail"):
-                st.caption(f"Error detail: {state['detail'][:300]}")
-            if show_actions:
-                with st.container(horizontal=True, horizontal_alignment="right"):
-                    st.button(
-                        "Remove",
-                        key=f"rm_{digest(url)}",
-                        on_click=remove_from_queue,
-                        args=(url,),
-                        icon=":material/delete:",
-                        help="Remove this item from the queue",
-                    )
+    ui.render_queue(
+        slot,
+        st.session_state.queue,
+        st.session_state.item_state,
+        fmt,
+        quality,
+        on_remove=remove_from_queue if show_actions else None,
+    )
 
 
 def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
@@ -394,7 +268,7 @@ def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
 # ----------------------------------------------------------------------
 inject_styles()
 remove_old_jobs()
-init_session_state()
+app_state.init_session_state(st.session_state)
 
 ffmpeg_ok = get_ffmpeg_dir() is not None
 ffmpeg_label = "FFmpeg ready" if ffmpeg_ok else "FFmpeg unavailable"
@@ -583,7 +457,7 @@ if st.session_state.results:
             data=lambda p=path: p.read_bytes(),
             file_name=item["filename"],
             mime=item["mime"],
-            key=f"saved_dl_{digest(item['url'])}",
+            key=f"saved_dl_{ui.digest(item['url'])}",
             icon=":material/download:",
             type="secondary",
             width="stretch",
