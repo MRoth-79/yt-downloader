@@ -610,6 +610,11 @@ with st.expander("Maintenance"):
     st.caption(
         f"yt-dlp version {YTDLP_VERSION}. Sites change often, so update it when downloads start failing."
     )
+    st.caption(
+        "Updating runs pip and changes the Python environment StreamTune runs in (usually the "
+        f"project's .venv), within the tested range {dl.YTDLP_REQUIREMENT}. "
+        "Restart StreamTune afterwards to load the new version."
+    )
     maintenance_panel()
 
 persist_session()

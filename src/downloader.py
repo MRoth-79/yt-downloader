@@ -31,6 +31,8 @@ STATE_FILE = WORK_DIR / "session.json"
 YTDLP_LOG_FILE = WORK_DIR / "ytdlp_update.log"
 SAVE_ROOT = Path.home() / "Downloads" / "StreamTune"
 JOB_MAX_AGE_HOURS = 24
+# Must match the yt-dlp line in requirements.txt (a unit test checks this).
+YTDLP_REQUIREMENT = "yt-dlp>=2026.10.26,<2027"
 
 FORMAT_MP3 = "MP3"
 FORMAT_MP4 = "MP4"
@@ -465,12 +467,17 @@ def explain_error(exc: BaseException) -> tuple[str, str]:
 def start_ytdlp_update() -> tuple[subprocess.Popen, Path]:
     """Start upgrading yt-dlp with pip in the background. Output goes to a log file.
 
-    The running process keeps the old version until StreamTune is restarted.
+    This installs into the Python environment that runs StreamTune (``sys.executable``,
+    normally the project's ``.venv``), so it changes that environment for every later run.
+    The upgrade stays within ``YTDLP_REQUIREMENT``, the same bounds as requirements.txt.
+
+    The running process keeps the old version loaded. StreamTune must be restarted to use
+    the new version.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     with open(YTDLP_LOG_FILE, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", YTDLP_REQUIREMENT],
             stdout=log,
             stderr=subprocess.STDOUT,
         )

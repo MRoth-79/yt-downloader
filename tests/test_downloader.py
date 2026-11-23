@@ -281,6 +281,27 @@ def test_state_round_trip_and_bad_file(tmp_path, monkeypatch):
     assert dl.load_state() == {}
 
 
+def test_ytdlp_requirement_matches_requirements_file():
+    requirements = (dl.PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    pins = [line.strip() for line in requirements if line.strip().startswith("yt-dlp")]
+    assert pins == [dl.YTDLP_REQUIREMENT]
+    assert "<" in dl.YTDLP_REQUIREMENT
+
+
+def test_start_ytdlp_update_uses_bounded_requirement(tmp_path, monkeypatch):
+    monkeypatch.setattr(dl, "WORK_DIR", tmp_path)
+    monkeypatch.setattr(dl, "YTDLP_LOG_FILE", tmp_path / "update.log")
+    calls = []
+    monkeypatch.setattr(dl.subprocess, "Popen", lambda args, **kwargs: calls.append(args) or "proc")
+
+    proc, log_path = dl.start_ytdlp_update()
+
+    assert proc == "proc"
+    assert log_path == tmp_path / "update.log"
+    assert calls[0][-1] == dl.YTDLP_REQUIREMENT
+    assert "yt-dlp" not in calls[0][:-1]
+
+
 def test_ytdlp_update_message_uses_last_line(tmp_path):
     log = tmp_path / "log.txt"
     log.write_text("Collecting yt-dlp\n\nSuccessfully installed yt-dlp-2026.1\n", encoding="utf-8")
