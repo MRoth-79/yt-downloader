@@ -9,6 +9,10 @@ dist/
 # Test and lint caches
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Local secrets and generated media (never commit these)
 cookies.txt

@@ -52,6 +52,12 @@ ruff format --check .
 python -m pytest
 ```
 
+To see test coverage per file in `src/` (including the lines that are not covered):
+
+```powershell
+python -m pytest --cov=src --cov-report=term-missing
+```
+
 ## Project layout
 
 | Path | Purpose |
