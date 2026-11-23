@@ -12,7 +12,6 @@ APP_UI_VERSION = "4.2.0"
 MAX_PARALLEL = 2
 STYLE_FILE = Path(__file__).resolve().with_name("styles.css")
 
-STATUS_PENDING = dl.STATUS_PENDING
 STATUS_PROCESSING = dl.STATUS_PROCESSING
 STATUS_COMPLETED = dl.STATUS_COMPLETED
 STATUS_ERROR = dl.STATUS_ERROR
@@ -64,7 +63,8 @@ def add_url(raw: str):
     except ValueError as exc:
         st.toast(str(exc), icon=":material/error:")
         return
-    if url in st.session_state.queue:
+    queue = st.session_state.queue
+    if app_state.is_queued(queue, url):
         st.toast("That link is already in the queue.", icon=":material/info:")
         return
     with st.spinner("Reading link…"):
@@ -78,24 +78,29 @@ def add_url(raw: str):
             st.toast(f"Could not read this link. {message}", icon=":material/error:")
             return
 
-    notice = dl.playlist_notice(url)
-    if notice:
-        st.toast(notice, icon=":material/info:")
-    st.session_state.queue.append(url)
-    st.session_state.item_state[url] = {
-        "status": STATUS_PENDING,
-        "title": info["title"],
-        "thumbnail": info["thumbnail"],
-        "duration": info["duration"],
-        "uploader": info["uploader"],
-        "error": "",
-        "detail": "",
-        "options": None,
-    }
+    if info.get("type") == "playlist":
+        added, duplicates = app_state.enqueue(queue, st.session_state.item_state, info["entries"])
+        message = ui.playlist_message(info["title"], added, duplicates, info["total"])
+        show_after_rerun(message, ":material/playlist_add_check:" if added else ":material/info:")
+    else:
+        app_state.enqueue(queue, st.session_state.item_state, [{**info, "url": url}])
+        notice = dl.playlist_notice(url)
+        if notice:
+            show_after_rerun(notice, ":material/info:")
     # The text box can only be cleared before it is drawn, so clear it on the next run.
     st.session_state.clear_draft = True
     persist_session()
     st.rerun()
+
+
+def show_after_rerun(message: str, icon: str):
+    st.session_state.toasts.append((message, icon))
+
+
+def show_queued_toasts():
+    for message, icon in st.session_state.toasts:
+        st.toast(message, icon=icon)
+    st.session_state.toasts = []
 
 
 def discard_result(url: str):
@@ -269,6 +274,7 @@ def run_conversions(urls: list[str], fmt: str, quality: str, queue_slot) -> int:
 inject_styles()
 remove_old_jobs()
 app_state.init_session_state(st.session_state)
+show_queued_toasts()
 
 ffmpeg_ok = get_ffmpeg_dir() is not None
 ffmpeg_label = "FFmpeg ready" if ffmpeg_ok else "FFmpeg unavailable"
@@ -332,7 +338,10 @@ with st.container(border=True, key="source_card"):
         placeholder="https://",
         help="Only add sources you have permission to convert.",
     )
-    st.caption("One authorized URL per queue item. The title and preview are read when you add it.")
+    st.caption(
+        "Paste one video link, or a playlist link to queue each of its videos "
+        f"(up to {dl.MAX_PLAYLIST_ITEMS}). The title and preview are read when you add it."
+    )
     if st.button(
         "Add to queue",
         type="secondary",
@@ -457,7 +466,7 @@ if st.session_state.results:
             data=lambda p=path: p.read_bytes(),
             file_name=item["filename"],
             mime=item["mime"],
-            key=f"saved_dl_{ui.digest(item['url'])}",
+            key=f"saved_dl_{app_state.digest(item['url'])}",
             icon=":material/download:",
             type="secondary",
             width="stretch",

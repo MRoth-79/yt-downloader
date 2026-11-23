@@ -6,12 +6,57 @@ in tests), so this module does not import Streamlit.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping
+import hashlib
+from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 
 import downloader as dl
 
 PERSISTED_KEYS = ("queue", "item_state", "results", "saved_items")
+
+
+def digest(url: str) -> str:
+    """Short, stable key for a queued URL. Used for duplicate checks and widget keys."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+
+
+def is_queued(queue: Iterable[str], url: str) -> bool:
+    key = digest(url)
+    return any(digest(queued) == key for queued in queue)
+
+
+def new_item(info: Mapping) -> dict:
+    """Queue entry for a link whose details were read with ``dl.fetch_info``."""
+    return {
+        "status": dl.STATUS_PENDING,
+        "title": info.get("title") or "",
+        "thumbnail": info.get("thumbnail") or "",
+        "duration": info.get("duration") or 0,
+        "uploader": info.get("uploader") or "",
+        "error": "",
+        "detail": "",
+        "options": None,
+    }
+
+
+def enqueue(queue: list[str], item_state: dict, entries: Iterable[Mapping]) -> tuple[int, int]:
+    """Append each ``{"url", "title", ...}`` entry that is not queued yet.
+
+    Returns ``(added, duplicates)``. Duplicates (also within ``entries``) are skipped.
+    """
+    queued = {digest(url) for url in queue}
+    added = duplicates = 0
+    for entry in entries:
+        url = entry["url"]
+        key = digest(url)
+        if key in queued:
+            duplicates += 1
+            continue
+        queued.add(key)
+        queue.append(url)
+        item_state[url] = new_item(entry)
+        added += 1
+    return added, duplicates
 
 
 def default_state() -> dict:
@@ -26,6 +71,7 @@ def default_state() -> dict:
         "saved_items": {},
         "last_saved_dir": "",
         "ytdlp_job": None,
+        "toasts": [],
     }
 
 

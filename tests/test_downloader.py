@@ -219,15 +219,20 @@ def test_zip_bytes_returns_archive_and_removes_temp_file(tmp_path, monkeypatch):
 
 
 def test_playlist_notice_only_for_video_inside_playlist():
-    assert "playlist is ignored" in dl.playlist_notice("https://example.com/watch?v=1&list=abc")
+    notice = dl.playlist_notice("https://example.com/watch?v=1&list=abc")
+    assert "Only the video" in notice
+    assert "paste the playlist link" in notice
     assert dl.playlist_notice("https://example.com/watch?v=1") == ""
     assert dl.playlist_notice("https://example.com/playlist?list=abc") == ""
 
 
-def test_fetch_info_rejects_playlists(monkeypatch):
+def _fake_ydl(monkeypatch, result):
+    """Replace yt_dlp.YoutubeDL with a stub that returns ``result``. Returns the options it got."""
+    seen: dict = {}
+
     class FakeYDL:
         def __init__(self, options):
-            pass
+            seen.update(options)
 
         def __enter__(self):
             return self
@@ -236,11 +241,86 @@ def test_fetch_info_rejects_playlists(monkeypatch):
             return False
 
         def extract_info(self, url, download):
-            return {"_type": "playlist", "title": "A list", "entries": []}
+            assert download is False
+            return result
 
     monkeypatch.setattr(dl.yt_dlp, "YoutubeDL", FakeYDL)
-    with pytest.raises(ValueError, match="Playlist"):
+    return seen
+
+
+def test_fetch_info_single_video_shape_is_unchanged(monkeypatch):
+    _fake_ydl(
+        monkeypatch,
+        {"title": "Song", "thumbnail": "https://img/1.jpg", "duration": 65, "channel": "Band"},
+    )
+    assert dl.fetch_info("https://example.com/watch?v=1") == {
+        "title": "Song",
+        "thumbnail": "https://img/1.jpg",
+        "duration": 65,
+        "uploader": "Band",
+    }
+
+
+def test_fetch_info_reads_playlists_flat_and_returns_entries(monkeypatch):
+    options = _fake_ydl(
+        monkeypatch,
+        {
+            "_type": "playlist",
+            "title": "A list",
+            "playlist_count": 500,
+            "entries": [
+                {
+                    "_type": "url",
+                    "url": "https://example.com/watch?v=1",
+                    "title": "One",
+                    "duration": 61,
+                    "uploader": "Band",
+                    "thumbnails": [{"url": "https://img/small.jpg"}, {"url": "https://img/big.jpg"}],
+                },
+                None,
+                {"_type": "playlist", "url": "https://example.com/playlist?list=nested"},
+                {"_type": "url", "url": "not-a-url", "title": "No link"},
+                {"_type": "url", "url": "https://example.com/watch?v=2", "channel": "Other"},
+            ],
+        },
+    )
+
+    info = dl.fetch_info("https://example.com/playlist?list=abc")
+
+    assert options["extract_flat"] == "in_playlist"
+    assert options["playlistend"] == dl.MAX_PLAYLIST_ITEMS
+    assert options["noplaylist"] is True
+    assert info["type"] == "playlist"
+    assert info["title"] == "A list"
+    assert info["total"] == 500
+    assert info["entries"] == [
+        {
+            "url": "https://example.com/watch?v=1",
+            "title": "One",
+            "thumbnail": "https://img/big.jpg",
+            "duration": 61,
+            "uploader": "Band",
+        },
+        {
+            "url": "https://example.com/watch?v=2",
+            "title": "",
+            "thumbnail": "",
+            "duration": 0,
+            "uploader": "Other",
+        },
+    ]
+
+
+def test_fetch_info_rejects_playlists_without_usable_entries(monkeypatch):
+    _fake_ydl(monkeypatch, {"_type": "multi_video", "title": "Empty", "entries": [None, {"url": "x"}]})
+    with pytest.raises(ValueError, match="No videos"):
         dl.fetch_info("https://example.com/playlist?list=abc")
+
+
+def test_fetch_info_rejects_empty_results(monkeypatch):
+    _fake_ydl(monkeypatch, None)
+    with pytest.raises(ValueError, match="No media information"):
+        dl.fetch_info("https://example.com/watch?v=1")
 
 
 # ----------------------------------------------------------------------

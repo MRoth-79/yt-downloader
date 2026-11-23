@@ -16,7 +16,7 @@ Local Streamlit app to convert authorized media sources to MP3 or MP4.
 - Save all finished files into a folder you name. Folders are created in `Downloads\StreamTune` (existing files are never overwritten).
 - Update yt-dlp from the Maintenance panel when sites change and downloads start failing. The update runs in the background and shows its result when it finishes. It installs into the Python environment StreamTune runs in (usually `.venv`), stays within the version range in `requirements.txt`, and takes effect after you restart StreamTune.
 - The queue and finished downloads are kept after a page refresh or an app restart. Leftover download folders older than 24 hours are deleted automatically.
-- Playlist links are not supported yet. A video link that also points into a playlist downloads only that video.
+- Paste a playlist link to queue each of its videos (up to 200 per link). Each video gets its own progress bar and can be retried on its own. Videos already in the queue are skipped. A video link that also points into a playlist adds only that video.
 
 ## Requirements
 

@@ -4,11 +4,23 @@ import downloader as dl
 import ui
 
 
-def test_digest_is_short_stable_and_url_specific():
-    first = ui.digest("https://example.com/a")
-    assert first == ui.digest("https://example.com/a")
-    assert first != ui.digest("https://example.com/b")
-    assert len(first) == 12
+@pytest.mark.parametrize(
+    "added, duplicates, total, expected",
+    [
+        (3, 0, 3, "Added 3 items from “Mix”."),
+        (1, 0, 1, "Added 1 item from “Mix”."),
+        (2, 1, 3, "Added 2 items from “Mix”. 1 item already in the queue was skipped."),
+        (1, 2, 3, "Added 1 item from “Mix”. 2 items already in the queue were skipped."),
+        (0, 3, 3, "Every item from “Mix” is already in the queue."),
+        (200, 0, 500, "Added 200 items from “Mix”. Only the first 200 of 500 items were read."),
+    ],
+)
+def test_playlist_message(added, duplicates, total, expected):
+    assert ui.playlist_message("Mix", added, duplicates, total, limit=200) == expected
+
+
+def test_playlist_message_without_title():
+    assert ui.playlist_message("", 2, 0, 2) == "Added 2 items from the playlist."
 
 
 @pytest.mark.parametrize(

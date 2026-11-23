@@ -7,6 +7,56 @@ def _item(status=dl.STATUS_PENDING, **extra):
 
 
 # ----------------------------------------------------------------------
+# digest, new_item, enqueue
+# ----------------------------------------------------------------------
+def test_digest_is_short_stable_and_url_specific():
+    first = state.digest("https://example.com/a")
+    assert first == state.digest("https://example.com/a")
+    assert first != state.digest("https://example.com/b")
+    assert len(first) == 12
+
+
+def test_is_queued_matches_by_digest():
+    assert state.is_queued(["https://a", "https://b"], "https://b")
+    assert not state.is_queued(["https://a"], "https://c")
+    assert not state.is_queued([], "https://a")
+
+
+def test_new_item_is_pending_with_metadata_and_defaults():
+    item = state.new_item({"url": "https://a", "title": "Song", "duration": 61, "uploader": None})
+    assert item == {
+        "status": dl.STATUS_PENDING,
+        "title": "Song",
+        "thumbnail": "",
+        "duration": 61,
+        "uploader": "",
+        "error": "",
+        "detail": "",
+        "options": None,
+    }
+
+
+def test_enqueue_adds_every_new_entry_and_skips_duplicates():
+    queue = ["https://a"]
+    item_state = {"https://a": _item(dl.STATUS_COMPLETED)}
+    entries = [
+        {"url": "https://a", "title": "Already queued"},
+        {"url": "https://b", "title": "B"},
+        {"url": "https://c", "title": "C", "duration": 10},
+        {"url": "https://b", "title": "Listed twice"},
+    ]
+
+    added, duplicates = state.enqueue(queue, item_state, entries)
+
+    assert (added, duplicates) == (2, 2)
+    assert queue == ["https://a", "https://b", "https://c"]
+    assert item_state["https://a"]["status"] == dl.STATUS_COMPLETED
+    assert item_state["https://b"]["title"] == "B"
+    assert item_state["https://c"]["status"] == dl.STATUS_PENDING
+    assert item_state["https://c"]["duration"] == 10
+
+
+# ----------------------------------------------------------------------
 # restore_session
 # ----------------------------------------------------------------------
 def test_restore_session_turns_processing_items_back_into_pending():

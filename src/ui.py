@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import html
 from collections.abc import Callable
 
 import streamlit as st
 
 import downloader as dl
+from state import digest
 
 EMPTY_QUEUE_HTML = """
 <div class="empty-queue" role="status">
@@ -19,9 +19,25 @@ EMPTY_QUEUE_HTML = """
 """
 
 
-def digest(url: str) -> str:
-    """Short, stable key suffix for widgets tied to a URL."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+def _items(count: int) -> str:
+    return f"{count} item" if count == 1 else f"{count} items"
+
+
+def playlist_message(
+    title: str, added: int, duplicates: int, total: int, limit: int = dl.MAX_PLAYLIST_ITEMS
+) -> str:
+    """Toast text after a playlist link was read and its items were queued."""
+    name = f"“{title}”" if title else "the playlist"
+    if added:
+        parts = [f"Added {_items(added)} from {name}."]
+    else:
+        parts = [f"Every item from {name} is already in the queue."]
+    if added and duplicates:
+        verb = "was" if duplicates == 1 else "were"
+        parts.append(f"{_items(duplicates)} already in the queue {verb} skipped.")
+    if total > limit:
+        parts.append(f"Only the first {limit} of {total} items were read.")
+    return " ".join(parts)
 
 
 def render_status_badge(status: str) -> str:
