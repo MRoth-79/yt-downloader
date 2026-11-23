@@ -1,5 +1,7 @@
 # StreamTune
 
+This repository is named `yt-downloader`, but the app it contains is called StreamTune.
+
 [![CI](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/MRoth-79/yt-downloader/actions/workflows/ci.yml)
 
 Local Streamlit app to convert authorized media sources to MP3 or MP4.
@@ -29,7 +31,7 @@ Windows: double-click `StreamTune.bat`. On first run it creates a `.venv` folder
 Or from a terminal:
 
 ```powershell
-cd C:\Users\jz2kbh\git\yt-downloader
+cd yt-downloader
 python run.py
 ```
 
@@ -60,3 +62,7 @@ python -m pytest
 | `src/styles.css` | Layout styles injected into the app |
 | `.streamlit/config.toml` | Theme (colors, fonts, radii) |
 | `tests/` | Unit tests for the helpers |
+
+## License
+
+StreamTune is released under the MIT License. See [LICENSE](LICENSE).
